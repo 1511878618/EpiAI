@@ -134,6 +134,7 @@ def normalize_split_data(
 ) -> tuple[CitySplitData, Optional[TensorStandardScaler], Optional[TensorStandardScaler]]:
     """
     Fit normalizers on train split only, then transform train/val/test.
+    Mark is passed through unchanged.
     """
     x_normalizer = None
     y_normalizer = None
@@ -144,6 +145,11 @@ def normalize_split_data(
     y_val = split_data.y_val
     x_test = split_data.x_test
     y_test = split_data.y_test
+    
+    # Currently, mark data is not normalized
+    mark_train = split_data.mark_train
+    mark_val = split_data.mark_val
+    mark_test = split_data.mark_test
 
     if normalize_x:
         x_normalizer = TensorStandardScaler(dims=x_norm_dims)
@@ -166,6 +172,9 @@ def normalize_split_data(
         y_val=y_val,
         x_test=x_test,
         y_test=y_test,
+        mark_train=mark_train,
+        mark_val=mark_val,
+        mark_test=mark_test,
         train_city_indices=split_data.train_city_indices,
         val_city_indices=split_data.val_city_indices,
         test_city_indices=split_data.test_city_indices,

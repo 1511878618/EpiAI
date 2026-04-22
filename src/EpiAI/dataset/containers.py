@@ -52,6 +52,7 @@ class CitySplitData:
     ------
     x_* : (time, city_split, input_dim)
     y_* : (time, city_split, target_dim)
+    mark_*: (time, city_split, mark_dim) or None
     """
     x_train: torch.Tensor
     y_train: torch.Tensor
@@ -60,9 +61,14 @@ class CitySplitData:
     x_test: torch.Tensor
     y_test: torch.Tensor
 
-    train_city_indices: list[int]
-    val_city_indices: list[int]
-    test_city_indices: list[int]
+    # NEW, supporting for mark data; 20260421
+    mark_train: Optional[torch.Tensor] = None
+    mark_val: Optional[torch.Tensor] = None
+    mark_test: Optional[torch.Tensor] = None
+
+    train_city_indices: Optional[list[int]] = None 
+    val_city_indices: Optional[list[int]] = None 
+    test_city_indices: Optional[list[int]]  = None 
 
 
 @dataclass
@@ -72,12 +78,19 @@ class WindowedData:
 
     Shapes
     ------
-    x : (num_samples, lookback, city, input_dim)
-    y : (num_samples, horizon,  city, target_dim)
+    x:
+        (num_samples, lookback, city, input_dim)
+    y:
+        (num_samples, horizon, city, target_dim)
+    x_mark:
+        (num_samples, lookback, city, mark_dim) or None
+    y_mark:
+        (num_samples, label_len, city, mark_dim) or None
     """
     x: torch.Tensor
     y: torch.Tensor
-
+    x_mark: Optional[torch.Tensor] = None
+    y_mark: Optional[torch.Tensor] = None
 
 @dataclass
 class DatasetBundle:
@@ -86,13 +99,23 @@ class DatasetBundle:
     """
     train_input: torch.Tensor
     train_target: torch.Tensor
+    train_x_mark: Optional[torch.Tensor]
+    train_y_mark: Optional[torch.Tensor]
+
     val_input: torch.Tensor
     val_target: torch.Tensor
+    val_x_mark: Optional[torch.Tensor]
+    val_y_mark: Optional[torch.Tensor]
+
     test_input: torch.Tensor
     test_target: torch.Tensor
+    test_x_mark: Optional[torch.Tensor]  # (city * num_samples, lookback, mark_dim) or None
+    test_y_mark: Optional[torch.Tensor]  # (city * num_samples,  horizon, mark_dim) or None; label_len is start from of timestep of lookback
+
 
     raw_x: torch.Tensor
     raw_y: torch.Tensor
+    raw_mark: Optional[torch.Tensor]
 
     split_data: CitySplitData
 
@@ -108,6 +131,9 @@ class DatasetBundle:
     input_feature_indices: list[int]
     target_feature_indices: list[int]
 
+    # NEW
+    mark_feature_names: list[str]
+    mark_feature_indices: list[int]
 
 __all__ = [
     "DiseaseTensorData",

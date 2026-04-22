@@ -13,12 +13,16 @@ from .type_defs import SplitMode
 
 class CitySplitter:
     """
-    Split x/y tensors by city dimension.
+    Split x/y(/mark) tensors by city dimension.
 
     Expected shape convention
     -------------------------
-    x : (time, city, input_dim)
-    y : (time, city, target_dim)
+    x:
+        (time, city, input_dim)
+    y:
+        (time, city, target_dim)
+    mark:
+        (time, city, mark_dim) or None
     """
 
     def __init__(self, city_dim: int) -> None:
@@ -28,6 +32,7 @@ class CitySplitter:
         self,
         x: torch.Tensor,
         y: torch.Tensor,
+        mark: Optional[torch.Tensor],
         split_mode: SplitMode,
         train_val_test_cutoff_line: Optional[tuple[int, int]] = None,
         train_city_indices: Optional[Sequence[int]] = None,
@@ -38,12 +43,14 @@ class CitySplitter:
             return self._split_by_cutoff(
                 x=x,
                 y=y,
+                mark=mark,
                 train_val_test_cutoff_line=train_val_test_cutoff_line,
             )
         if split_mode == "indices":
             return self._split_by_indices(
                 x=x,
                 y=y,
+                mark=mark,
                 train_city_indices=train_city_indices,
                 val_city_indices=val_city_indices,
                 test_city_indices=test_city_indices,
@@ -58,19 +65,37 @@ class CitySplitter:
             raise ValueError(f"`city_dim` out of range for x with {x.dim()} dims: got {city_dim}.")
         return city_dim
 
-    def _validate_alignment(self, x: torch.Tensor, y: torch.Tensor, city_dim: int) -> int:
+    def _validate_alignment(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        mark: Optional[torch.Tensor],
+        city_dim: int,
+    ) -> int:
         num_cities = x.shape[city_dim]
 
         if y.dim() <= city_dim:
-            raise ValueError(
-                f"`y` does not have city_dim={city_dim}. y.dim()={y.dim()}."
-            )
+            raise ValueError(f"`y` does not have city_dim={city_dim}. y.dim()={y.dim()}.")
 
         if y.shape[city_dim] != num_cities:
             raise ValueError(
                 f"`x` and `y` are not aligned on city_dim={city_dim}: "
                 f"x.shape[{city_dim}]={num_cities}, y.shape[{city_dim}]={y.shape[city_dim]}."
             )
+
+        if mark is not None:
+            if mark.dim() <= city_dim:
+                raise ValueError(f"`mark` does not have city_dim={city_dim}. mark.dim()={mark.dim()}.")
+            if mark.shape[0] != x.shape[0]:
+                raise ValueError(
+                    f"`mark` and `x` are not aligned on time dimension: "
+                    f"mark.shape[0]={mark.shape[0]}, x.shape[0]={x.shape[0]}."
+                )
+            if mark.shape[city_dim] != num_cities:
+                raise ValueError(
+                    f"`mark` and `x` are not aligned on city_dim={city_dim}: "
+                    f"mark.shape[{city_dim}]={mark.shape[city_dim]}, x.shape[{city_dim}]={num_cities}."
+                )
 
         return num_cities
 
@@ -87,6 +112,7 @@ class CitySplitter:
         self,
         x: torch.Tensor,
         y: torch.Tensor,
+        mark: Optional[torch.Tensor],
         train_val_test_cutoff_line: Optional[tuple[int, int]],
     ) -> CitySplitData:
         if train_val_test_cutoff_line is None:
@@ -95,7 +121,7 @@ class CitySplitter:
             )
 
         city_dim = self._resolve_city_dim(x)
-        num_cities = self._validate_alignment(x, y, city_dim)
+        num_cities = self._validate_alignment(x, y, mark, city_dim)
 
         val_start_cutoff, test_start_cutoff = train_val_test_cutoff_line
         if not (0 <= val_start_cutoff <= test_start_cutoff <= num_cities):
@@ -110,6 +136,7 @@ class CitySplitter:
         return self._split_by_indices(
             x=x,
             y=y,
+            mark=mark,
             train_city_indices=train_indices,
             val_city_indices=val_indices,
             test_city_indices=test_indices,
@@ -119,6 +146,7 @@ class CitySplitter:
         self,
         x: torch.Tensor,
         y: torch.Tensor,
+        mark: Optional[torch.Tensor],
         train_city_indices: Optional[Sequence[int]],
         val_city_indices: Optional[Sequence[int]],
         test_city_indices: Optional[Sequence[int]],
@@ -130,7 +158,7 @@ class CitySplitter:
             )
 
         city_dim = self._resolve_city_dim(x)
-        num_cities = self._validate_alignment(x, y, city_dim)
+        num_cities = self._validate_alignment(x, y, mark, city_dim)
 
         train_city_indices = list(train_city_indices)
         val_city_indices = list(val_city_indices)
@@ -147,9 +175,7 @@ class CitySplitter:
                 )
 
         if len(set(all_indices)) != len(all_indices):
-            raise ValueError(
-                "Duplicated city indices detected across train/val/test splits."
-            )
+            raise ValueError("Duplicated city indices detected across train/val/test splits.")
 
         x_train = self._index_tensor_along_dim(x, city_dim, train_city_indices)
         x_val = self._index_tensor_along_dim(x, city_dim, val_city_indices)
@@ -159,6 +185,15 @@ class CitySplitter:
         y_val = self._index_tensor_along_dim(y, city_dim, val_city_indices)
         y_test = self._index_tensor_along_dim(y, city_dim, test_city_indices)
 
+        if mark is not None:
+            mark_train = self._index_tensor_along_dim(mark, city_dim, train_city_indices)
+            mark_val = self._index_tensor_along_dim(mark, city_dim, val_city_indices)
+            mark_test = self._index_tensor_along_dim(mark, city_dim, test_city_indices)
+        else:
+            mark_train = None
+            mark_val = None
+            mark_test = None
+
         return CitySplitData(
             x_train=x_train,
             y_train=y_train,
@@ -166,6 +201,9 @@ class CitySplitter:
             y_val=y_val,
             x_test=x_test,
             y_test=y_test,
+            mark_train=mark_train,
+            mark_val=mark_val,
+            mark_test=mark_test,
             train_city_indices=train_city_indices,
             val_city_indices=val_city_indices,
             test_city_indices=test_city_indices,

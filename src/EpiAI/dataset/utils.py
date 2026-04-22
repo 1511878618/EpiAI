@@ -7,43 +7,39 @@ from typing import Optional
 
 import torch
 
-
 def shuffle_training_data(
     train_input: torch.Tensor,
     train_target: torch.Tensor,
-    seed: Optional[int] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    train_x_mark: Optional[torch.Tensor] = None,
+    train_y_mark: Optional[torch.Tensor] = None,
+    seed: int = 42,
+):
     """
     Shuffle training samples along the first dimension while keeping
-    input-target alignment.
-
-    Parameters
-    ----------
-    train_input:
-        Tensor of shape (N, lookback, input_dim)
-    train_target:
-        Tensor of shape (N, horizon, target_dim)
-    seed:
-        Optional random seed for reproducible shuffling.
-
-    Returns
-    -------
-    shuffled_input, shuffled_target
+    input-target-(mark) alignment.
     """
-    if train_input.shape[0] != train_target.shape[0]:
-        raise ValueError(
-            f"train_input and train_target must have the same number of samples, "
-            f"got {train_input.shape[0]} and {train_target.shape[0]}."
-        )
+    num_samples = train_input.shape[0]
 
-    if seed is not None:
-        generator = torch.Generator()
-        generator.manual_seed(seed)
-        perm = torch.randperm(train_input.shape[0], generator=generator)
-    else:
-        perm = torch.randperm(train_input.shape[0])
+    if train_target.shape[0] != num_samples:
+        raise ValueError("train_input and train_target must have same number of samples")
 
-    return train_input[perm], train_target[perm]
+    if train_x_mark is not None and train_x_mark.shape[0] != num_samples:
+        raise ValueError("train_x_mark must have same number of samples as train_input")
 
+    if train_y_mark is not None and train_y_mark.shape[0] != num_samples:
+        raise ValueError("train_y_mark must have same number of samples as train_input")
 
-__all__ = ["shuffle_training_data"]
+    g = torch.Generator()
+    g.manual_seed(seed)
+    perm = torch.randperm(num_samples, generator=g)
+
+    train_input = train_input[perm]
+    train_target = train_target[perm]
+
+    if train_x_mark is not None:
+        train_x_mark = train_x_mark[perm]
+
+    if train_y_mark is not None:
+        train_y_mark = train_y_mark[perm]
+
+    return train_input, train_target, train_x_mark, train_y_mark

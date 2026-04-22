@@ -14,7 +14,7 @@ def load_disease_tensor(
     """
     Load raw tensor dataset from disk.
     """
-    obj = torch.load(data_path)
+    obj = torch.load(data_path, weights_only=False)
     return DiseaseTensorData(
         tensor=obj["tensor"],
         dims=obj["dims"],
