@@ -6,6 +6,8 @@ from .mlp import MLPForecaster
 from .resnet import ResNetForecaster
 from .tcn import TCNForecaster
 from .transformer import TransformerForecaster
+from .Autoformer import AutoformerForecaster
+from .TimesNet import TimesNetForecaster
 
 __all__ = [
     'CNNLSTMForecaster',
@@ -15,5 +17,7 @@ __all__ = [
     'MLPForecaster',
     'ResNetForecaster',
     'TCNForecaster',
-    'TransformerForecaster'
+    'TransformerForecaster',
+    "AutoformerForecaster",
+    "TimesNetForecaster"
 ]

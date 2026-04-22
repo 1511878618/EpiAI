@@ -89,7 +89,9 @@ class TCNForecaster(nn.Module):
         self.network = nn.Sequential(*layers)
 
         self.fc = nn.Linear(channels[-1], horizon * target_dim)
-
+        # ===== 基本结构参数 =====
+        self.input_dim = input_dim
+        self.lookback = lookback
         self.horizon = horizon
         self.target_dim = target_dim
 

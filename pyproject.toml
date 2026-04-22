@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "EpiAI"
+version = "0.1.0"
+description = "Short description of your package"
+readme = "README.md"
+authors = [
+  { name = "Tingfeng Xu", email = "xutingfeng@big.ac.cn" }
+]
+requires-python = ">=3.12"
+dependencies = [
+  "epilearn",
+  "Eir",
+  "torch==2.7.0",
+  "torchvision==0.22.0",
+  "torchaudio==2.7.0",
+  "torch_geometric",
+  "epydemix",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

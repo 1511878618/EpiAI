@@ -64,13 +64,13 @@ class AutoformerForecaster(nn.Module):
     
  
 
-    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+    def forward(self, x_enc):
         """
         x_enc: [Batch, seq_len, input_dim]
 
         """
        # enc
-        enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
         # final
         y = self.projection(enc_out).mean(dim=1)
