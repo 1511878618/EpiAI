@@ -1,71 +1,111 @@
+"""
+Loss functions for infectious disease outbreak forecasting.
+
+This module provides various loss functions designed to handle the
+imbalanced nature of outbreak prediction, where爆发期 (outbreak periods)
+require special attention.
+"""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def divide_no_nan(a, b):
+
+def divide_no_nan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Safe division that handles NaN and Inf values."""
     result = a / b
     result[torch.isnan(result) | torch.isinf(result)] = 0.0
     return result
 
+
+# =============================================================================
+# Basic Losses
+# =============================================================================
+
+
 class MAPELoss(nn.Module):
-    """均平均绝对百分比误差：衡量相对误差，对大数值不敏感"""
-    def forward(self, pred, target):
-        # 避免除以 0
+    """Mean Absolute Percentage Error - measures relative error, insensitive to large values."""
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         loss = torch.abs((pred - target) / (target + 1e-8))
         return torch.mean(loss)
 
+
 class SMAPELoss(nn.Module):
-    """对称平均绝对百分比误差：修正了 MAPE 对预测值和真实值不对称的问题"""
-    def forward(self, pred, target):
+    """
+    Symmetric Mean Absolute Percentage Error.
+    Addresses the asymmetry issue of MAPE by using symmetric denominator.
+    """
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         numerator = torch.abs(pred - target)
         denominator = (torch.abs(pred) + torch.abs(target)) / 2 + 1e-8
         return torch.mean(numerator / denominator)
 
 
 class LogCoshLoss(nn.Module):
-    def forward(self, pred, target):
+    """Log-Cosh loss function - behaves like MSE but is smoother."""
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         loss = torch.log(torch.cosh(pred - target + 1e-12))
-        return torch.mean(loss)    
+        return torch.mean(loss)
+
 
 class CorrelationLoss(nn.Module):
     """
-    相关性损失：关注波形的一致性而非绝对数值。
-    适合短期内关注趋势正负（涨跌）而非绝对大小的任务。
+    Correlation-based loss focusing on waveform consistency.
+    Suitable for tasks where trend direction matters more than absolute values.
     """
-    def forward(self, pred, target):
-        # 计算 Pearson 相关系数
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         pred_mean = torch.mean(pred, dim=1, keepdim=True)
         target_mean = torch.mean(target, dim=1, keepdim=True)
-        
+
         nom = torch.sum((pred - pred_mean) * (target - target_mean), dim=1)
-        den = torch.sqrt(torch.sum((pred - pred_mean)**2, dim=1) * torch.sum((target - target_mean)**2, dim=1) + 1e-8)
-        
+        den = torch.sqrt(
+            torch.sum((pred - pred_mean) ** 2, dim=1)
+            * torch.sum((target - target_mean) ** 2, dim=1)
+            + 1e-8
+        )
+
         corr = nom / den
         return 1 - torch.mean(corr)
-    
-class MultiQuantileLoss(nn.Module):
-    """针对 0.1, 0.5, 0.9 分位数的联合损失"""
-    def __init__(self, quantiles=[0.1, 0.5, 0.9]):
-        super().__init__()
-        self.quantiles = quantiles
 
-    def forward(self, pred, target):
-        # 假设 pred 的最后一个维度大小等于 len(quantiles)
+
+class MultiQuantileLoss(nn.Module):
+    """Joint loss for multiple quantiles (0.1, 0.5, 0.9)."""
+
+    def __init__(self, quantiles: list[float] | tuple[float, ...] = (0.1, 0.5, 0.9)):
+        super().__init__()
+        self.quantiles = list(quantiles)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         losses = []
         for i, q in enumerate(self.quantiles):
             errors = target - pred[..., i]
             losses.append(torch.max((q - 1) * errors, q * errors))
         return torch.mean(torch.stack(losses))
-    
+
+
+# =============================================================================
+# Trend-Aware Losses
+# =============================================================================
 
 
 class TrendAwareLoss(nn.Module):
-    def __init__(self, alpha=1.0, beta=1.0):
+    """
+    Combines MAE with trend consistency loss.
+    Ensures predictions follow the same trend pattern as ground truth.
+    """
+
+    def __init__(self, alpha: float = 1.0, beta: float = 1.0):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
 
-    def forward(self, y_pred, y_true):
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
         mae_loss = torch.abs(y_pred - y_true).mean()
 
         pred_diff = y_pred[:, 1:] - y_pred[:, :-1]
@@ -73,17 +113,33 @@ class TrendAwareLoss(nn.Module):
         trend_loss = torch.abs(pred_diff - true_diff).mean()
 
         return self.alpha * mae_loss + self.beta * trend_loss
-import torch
-import torch.nn as nn
+
+
+# =============================================================================
+# Outbreak-Aware Losses
+# =============================================================================
+
 
 class OutbreakAwareLoss(nn.Module):
+    """
+    Outbreak-aware loss with weighted MAE.
+    Gives higher weight to samples during outbreak periods.
+
+    Args:
+        outbreak_threshold: Threshold to identify outbreak periods
+        alpha: Weight for base MAE
+        beta: Weight for outbreak loss
+        gamma: Weight for trend loss
+        outbreak_weight: Additional weight multiplier for outbreak samples
+    """
+
     def __init__(
         self,
-        outbreak_threshold,
-        alpha=1.0,          # base MAE 权重
-        beta=3.0,           # outbreak loss 权重
-        gamma=1.0,          # trend loss 权重
-        outbreak_weight=5.0 # 爆发点额外权重
+        outbreak_threshold: float,
+        alpha: float = 1.0,
+        beta: float = 3.0,
+        gamma: float = 1.0,
+        outbreak_weight: float = 5.0,
     ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
@@ -92,22 +148,16 @@ class OutbreakAwareLoss(nn.Module):
         self.gamma = gamma
         self.outbreak_weight = outbreak_weight
 
-    def forward(self, pred, target):
-        """
-        pred:   [B, H, D]
-        target: [B, H, D]
-        """
-        # 1) 基础 MAE
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # Base MAE
         base_mae = torch.abs(pred - target).mean()
 
-        # 2) 爆发窗口损失
-        outbreak_mask = (target >= self.outbreak_threshold).float()   # [B, H, D]
-
-        # 给爆发点更大权重
+        # Outbreak window loss
+        outbreak_mask = (target >= self.outbreak_threshold).float()
         weights = 1.0 + outbreak_mask * (self.outbreak_weight - 1.0)
         outbreak_mae = (weights * torch.abs(pred - target)).mean()
 
-        # 3) 趋势损失（比较 horizon 内的变化）
+        # Trend loss
         if target.size(1) > 1:
             pred_diff = pred[:, 1:, :] - pred[:, :-1, :]
             target_diff = target[:, 1:, :] - target[:, :-1, :]
@@ -115,11 +165,23 @@ class OutbreakAwareLoss(nn.Module):
         else:
             trend_mae = torch.tensor(0.0, device=target.device)
 
-        loss = self.alpha * base_mae + self.beta * outbreak_mae + self.gamma * trend_mae
-        return loss
+        return self.alpha * base_mae + self.beta * outbreak_mae + self.gamma * trend_mae
+
 
 class AsymmetricOutbreakLoss(nn.Module):
-    def __init__(self, outbreak_threshold, alpha=1.0, beta=3.0, gamma=1.0, under_weight=2.0):
+    """
+    Asymmetric outbreak loss that penalizes underestimation more heavily.
+    During outbreak periods, underestimating (pred < target) gets extra penalty.
+    """
+
+    def __init__(
+        self,
+        outbreak_threshold: float,
+        alpha: float = 1.0,
+        beta: float = 3.0,
+        gamma: float = 1.0,
+        under_weight: float = 2.0,
+    ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
         self.alpha = alpha
@@ -127,7 +189,7 @@ class AsymmetricOutbreakLoss(nn.Module):
         self.gamma = gamma
         self.under_weight = under_weight
 
-    def forward(self, pred, target):
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         base_mae = torch.abs(pred - target).mean()
 
         outbreak_mask = (target >= self.outbreak_threshold).float()
@@ -136,8 +198,6 @@ class AsymmetricOutbreakLoss(nn.Module):
         if outbreak_count > 0:
             error = pred - target
             abs_error = torch.abs(error)
-
-            # 低估：pred < target
             under_mask = (error < 0).float()
 
             outbreak_loss = (
@@ -155,29 +215,25 @@ class AsymmetricOutbreakLoss(nn.Module):
 
         return self.alpha * base_mae + self.beta * outbreak_loss + self.gamma * trend_loss
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 
 class OutbreakWeightedHuberLoss(nn.Module):
     """
-    pred:   [B, H, D]
-    target: [B, H, D]
+    Combines Huber loss with outbreak awareness and trend consistency.
 
-    组成：
-    1) base huber：整体稳定
-    2) outbreak window mae：强化爆发窗口
-    3) trend mae：强化窗口内升降趋势
+    Components:
+        1. Base Huber loss for overall stability
+        2. Outbreak window MAE for强化爆发窗口
+        3. Trend MAE for窗口内升降趋势
     """
+
     def __init__(
         self,
         outbreak_threshold: float,
-        alpha: float = 1.0,   # base huber
-        beta: float = 3.0,    # outbreak window
-        gamma: float = 1.0,   # trend
-        delta: float = 1.0,   # huber delta
-        expand_window: bool = True
+        alpha: float = 1.0,
+        beta: float = 3.0,
+        gamma: float = 1.0,
+        delta: float = 1.0,
+        expand_window: bool = True,
     ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
@@ -189,8 +245,13 @@ class OutbreakWeightedHuberLoss(nn.Module):
 
     def _expand_mask(self, mask: torch.Tensor) -> torch.Tensor:
         """
-        mask: [B, H, D]
-        若某一步是爆发，则前后一步也纳入爆发窗口
+        Expand outbreak mask to include neighboring time steps.
+
+        Args:
+            mask: Binary mask of shape [B, H, D]
+
+        Returns:
+            Expanded mask where adjacent steps are also marked during outbreaks
         """
         if not self.expand_window or mask.size(1) <= 1:
             return mask
@@ -203,10 +264,10 @@ class OutbreakWeightedHuberLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         assert pred.shape == target.shape, f"pred {pred.shape} != target {target.shape}"
 
-        # 1) base huber
+        # Base Huber
         base_huber = F.huber_loss(pred, target, delta=self.delta, reduction="mean")
 
-        # 2) outbreak window mae
+        # Outbreak window MAE
         raw_mask = (target >= self.outbreak_threshold).float()
         outbreak_mask = self._expand_mask(raw_mask)
         outbreak_count = outbreak_mask.sum()
@@ -216,7 +277,7 @@ class OutbreakWeightedHuberLoss(nn.Module):
         else:
             outbreak_mae = pred.new_tensor(0.0)
 
-        # 3) trend mae
+        # Trend MAE
         if target.size(1) > 1:
             pred_diff = pred[:, 1:, :] - pred[:, :-1, :]
             target_diff = target[:, 1:, :] - target[:, :-1, :]
@@ -224,22 +285,24 @@ class OutbreakWeightedHuberLoss(nn.Module):
         else:
             trend_mae = pred.new_tensor(0.0)
 
-        loss = self.alpha * base_huber + self.beta * outbreak_mae + self.gamma * trend_mae
-        return loss
+        return self.alpha * base_huber + self.beta * outbreak_mae + self.gamma * trend_mae
 
-class AsymmetricOutbreakLoss_V2(nn.Module):
+
+class AsymmetricOutbreakLossV2(nn.Module):
     """
-    更惩罚“低估爆发”的情况：
-    pred < target 且 target 处于爆发窗口时，额外加权
+    V2 of asymmetric outbreak loss with expanded window support.
+
+    Penalizes underestimation (pred < target) more heavily during outbreaks.
     """
+
     def __init__(
         self,
         outbreak_threshold: float,
-        alpha: float = 1.0,         # base mae
-        beta: float = 3.0,          # outbreak part
-        gamma: float = 1.0,         # trend
-        under_weight: float = 2.0,  # 对低估额外惩罚
-        expand_window: bool = True
+        alpha: float = 1.0,
+        beta: float = 3.0,
+        gamma: float = 1.0,
+        under_weight: float = 2.0,
+        expand_window: bool = True,
     ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
@@ -260,10 +323,10 @@ class AsymmetricOutbreakLoss_V2(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         assert pred.shape == target.shape, f"pred {pred.shape} != target {target.shape}"
 
-        # 1) base mae
+        # Base MAE
         base_mae = torch.abs(pred - target).mean()
 
-        # 2) outbreak window asymmetric loss
+        # Outbreak window asymmetric loss
         raw_mask = (target >= self.outbreak_threshold).float()
         outbreak_mask = self._expand_mask(raw_mask)
         outbreak_count = outbreak_mask.sum()
@@ -271,8 +334,6 @@ class AsymmetricOutbreakLoss_V2(nn.Module):
         if outbreak_count > 0:
             error = pred - target
             abs_error = torch.abs(error)
-
-            # 低估时 pred-target < 0
             under_mask = (error < 0).float()
 
             outbreak_loss = (
@@ -283,7 +344,7 @@ class AsymmetricOutbreakLoss_V2(nn.Module):
         else:
             outbreak_loss = pred.new_tensor(0.0)
 
-        # 3) trend
+        # Trend loss
         if target.size(1) > 1:
             pred_diff = pred[:, 1:, :] - pred[:, :-1, :]
             target_diff = target[:, 1:, :] - target[:, :-1, :]
@@ -292,18 +353,21 @@ class AsymmetricOutbreakLoss_V2(nn.Module):
             trend_loss = pred.new_tensor(0.0)
 
         return self.alpha * base_mae + self.beta * outbreak_loss + self.gamma * trend_loss
+
+
 class FocalRegressionLoss(nn.Module):
     """
-    在 MAE 基础上加 focal-style 调制：
-    error 越大，权重越大
-    同时可叠加 outbreak 权重
+    Focal-style modulated regression loss.
+
+    Larger errors receive higher weights, with optional outbreak weighting.
     """
+
     def __init__(
         self,
-        outbreak_threshold: float = None,
+        outbreak_threshold: float | None = None,
         gamma_focal: float = 2.0,
         outbreak_weight: float = 3.0,
-        eps: float = 1e-6
+        eps: float = 1e-6,
     ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
@@ -316,7 +380,7 @@ class FocalRegressionLoss(nn.Module):
 
         abs_error = torch.abs(pred - target)
 
-        # 归一化误差，避免数值过大
+        # Normalize error to avoid numerical issues
         scale = target.abs().mean().detach() + self.eps
         norm_error = abs_error / scale
 
@@ -329,23 +393,27 @@ class FocalRegressionLoss(nn.Module):
 
         loss = weights * focal_factor * abs_error
         return loss.mean()
+
+
 class RegressionWithOutbreakBCELoss(nn.Module):
     """
-    不修改模型结构：
-    - 主任务：回归（MAE / Huber）
-    - 辅助任务：用 pred 相对 threshold 的位置，构造 outbreak 概率，再做 BCE
+    Combined regression and outbreak classification loss.
 
-    注意：
-    这里的 outbreak_prob 不是单独 head 输出，而是从 pred 经过 sigmoid 近似得到
+    - Main task: Regression (MAE / Huber)
+    - Auxiliary task: Outbreak probability via BCE on pred relative to threshold
+
+    Note:
+        Outbreak probability is derived from pred via sigmoid, not from a separate head.
     """
+
     def __init__(
         self,
         outbreak_threshold: float,
-        alpha: float = 1.0,      # regression
-        beta: float = 1.0,       # outbreak BCE
+        alpha: float = 1.0,
+        beta: float = 1.0,
         use_huber: bool = True,
         delta: float = 1.0,
-        temperature: float = 1.0
+        temperature: float = 1.0,
     ):
         super().__init__()
         self.outbreak_threshold = outbreak_threshold
@@ -358,16 +426,14 @@ class RegressionWithOutbreakBCELoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         assert pred.shape == target.shape, f"pred {pred.shape} != target {target.shape}"
 
-        # 1) regression part
+        # Regression part
         if self.use_huber:
             reg_loss = F.huber_loss(pred, target, delta=self.delta, reduction="mean")
         else:
             reg_loss = torch.abs(pred - target).mean()
 
-        # 2) outbreak proxy classification
+        # Outbreak proxy classification
         outbreak_label = (target >= self.outbreak_threshold).float()
-
-        # 用 pred 相对 threshold 的大小构造“爆发概率”
         outbreak_logit = (pred - self.outbreak_threshold) / self.temperature
         cls_loss = F.binary_cross_entropy_with_logits(outbreak_logit, outbreak_label)
 

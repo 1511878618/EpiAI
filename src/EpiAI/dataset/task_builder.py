@@ -1,6 +1,7 @@
 """
 Build x/y tensors from the feature dimension of a raw (time, city, feature) tensor.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -9,7 +10,6 @@ import torch
 
 from .containers import DiseaseTensorData
 from .type_defs import InputFeatureMode
-
 
 
 class FeatureTaskBuilder:
@@ -123,7 +123,6 @@ class FeatureTaskBuilder:
         }
 
         return x, y, mark, metadata
-
 
 
 __all__ = ["FeatureTaskBuilder"]

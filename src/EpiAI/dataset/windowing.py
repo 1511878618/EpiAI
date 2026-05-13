@@ -1,49 +1,14 @@
 """
 Sliding-window generation and city-dimension flattening for city-by-city training.
 """
+
 from __future__ import annotations
 
-import torch
 from typing import Optional
+
+import torch
+
 from .containers import WindowedData
-# def build_xy_mark(
-#     mark_hist: torch.Tensor,   # [N, lookback, mark_dim]
-#     mark_future: torch.Tensor, # [N, horizon, mark_dim]
-#     label_len: int,
-#     horizon: int,
-# ) -> tuple[torch.Tensor, torch.Tensor]:
-#     """
-#     Returns:
-#         x_mark: [N, lookback, mark_dim]
-#         y_mark: [N, horizon, mark_dim]
-#     """
-#     if mark_hist is None or mark_future is None:
-#         return None, None
-
-#     if mark_hist.ndim != 3:
-#         raise ValueError(f"mark_hist must be [N, lookback, mark_dim], got {tuple(mark_hist.shape)}")
-#     if mark_future.ndim != 3:
-#         raise ValueError(f"mark_future must be [N, horizon, mark_dim], got {tuple(mark_future.shape)}")
-
-#     if mark_hist.shape[0] != mark_future.shape[0]:
-#         raise ValueError("mark_hist and mark_future must have the same batch size")
-#     if mark_hist.shape[-1] != mark_future.shape[-1]:
-#         raise ValueError("mark_hist and mark_future must have the same mark_dim")
-#     if mark_future.shape[1] < horizon:
-#         raise ValueError(
-#             f"mark_future length ({mark_future.shape[1]}) must be >= horizon ({horizon})"
-#         )
-#     if mark_hist.shape[1] < label_len:
-#         raise ValueError(
-#             f"mark_hist length ({mark_hist.shape[1]}) must be >= label_len ({label_len})"
-#         )
-
-#     x_mark = mark_hist
-#     y_mark = torch.cat(
-#         [mark_hist[:, -label_len:, :], mark_future[:, :horizon, :]],
-#         dim=1,
-#     )
-#     return x_mark, y_mark
 
 
 def make_sliding_windows(
@@ -53,7 +18,6 @@ def make_sliding_windows(
     horizon: int,
     ahead: int = 0,
     mark: Optional[torch.Tensor] = None,
-    # label_len: Optional[int] = None,   # NEW
 ) -> WindowedData:
     """
     Generate sliding-window forecasting samples.
@@ -131,9 +95,8 @@ def make_sliding_windows(
             x_mark_hist = mark[hist_start:hist_end]
             x_mark_windows.append(x_mark_hist)
 
-            # y_mark = last label_len from hist + future horizon
-            # hist_label_mark = x_mark_hist[-label_len:]     # [label_len, city, mark_dim]
-            fut_mark = mark[fut_start:fut_end]             # [horizon, city, mark_dim]
+            # y_mark: future horizon markers
+            fut_mark = mark[fut_start:fut_end]
             y_mark = fut_mark
             y_mark_windows.append(y_mark)
 
@@ -230,7 +193,6 @@ def flatten_city_windows_for_training(
         model_y_mark = None
 
     return model_input, model_target, model_x_mark, model_y_mark
-
 
 
 __all__ = ["make_sliding_windows", "flatten_city_windows_for_training"]

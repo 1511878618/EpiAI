@@ -145,7 +145,7 @@ def normalize_split_data(
     y_val = split_data.y_val
     x_test = split_data.x_test
     y_test = split_data.y_test
-    
+
     # Currently, mark data is not normalized
     mark_train = split_data.mark_train
     mark_val = split_data.mark_val

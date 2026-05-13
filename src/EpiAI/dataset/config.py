@@ -65,9 +65,24 @@ class DatasetConfig:
     shuffle_train: bool = True
     shuffle_seed: Optional[int] = 42
     
-    # NEW: resolve label_len
-    @property
+    # =========================================================================
+    # Computed Properties
+    # =========================================================================
+
+    @staticmethod
     def resolve_label_len(config: DatasetConfig) -> int:
+        """
+        Resolve the effective label length for decoder input.
+
+        Args:
+            config: DatasetConfig instance
+
+        Returns:
+            Effective label length (either explicit or default)
+
+        Raises:
+            ValueError: If label_len is invalid
+        """
         if config.label_len is not None:
             if config.label_len <= 0:
                 raise ValueError(f"label_len must be > 0, got {config.label_len}")
@@ -77,6 +92,6 @@ class DatasetConfig:
                 )
             return config.label_len
 
-        # default rule
+        # Default rule: use half of lookback
         return config.lookback // 2
 __all__ = ["DatasetConfig"]

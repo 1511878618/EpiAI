@@ -61,8 +61,6 @@ class MultiTargetCityDatasetBuilder:
             y_norm_dims=self.config.y_norm_dims,
         )
 
-        label_len = self.config.resolve_label_len
-
         train_windows = make_sliding_windows(
             x=split_data.x_train,
             y=split_data.y_train,
@@ -70,7 +68,6 @@ class MultiTargetCityDatasetBuilder:
             horizon=self.config.horizon,
             ahead=self.config.ahead,
             mark=split_data.mark_train,
-            # label_len=label_len,   # NEW
         )
         val_windows = make_sliding_windows(
             x=split_data.x_val,
@@ -79,7 +76,6 @@ class MultiTargetCityDatasetBuilder:
             horizon=self.config.horizon,
             ahead=self.config.ahead,
             mark=split_data.mark_val,
-            # label_len=label_len,   # NEW
         )
         test_windows = make_sliding_windows(
             x=split_data.x_test,
@@ -88,7 +84,6 @@ class MultiTargetCityDatasetBuilder:
             horizon=self.config.horizon,
             ahead=self.config.ahead,
             mark=split_data.mark_test,
-            # label_len=label_len,   # NEW
         )
 
         train_input, train_target, train_x_mark, train_y_mark = flatten_city_windows_for_training(

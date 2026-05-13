@@ -61,14 +61,14 @@ class CitySplitData:
     x_test: torch.Tensor
     y_test: torch.Tensor
 
-    # NEW, supporting for mark data; 20260421
+    # Mark data support
     mark_train: Optional[torch.Tensor] = None
     mark_val: Optional[torch.Tensor] = None
     mark_test: Optional[torch.Tensor] = None
 
-    train_city_indices: Optional[list[int]] = None 
-    val_city_indices: Optional[list[int]] = None 
-    test_city_indices: Optional[list[int]]  = None 
+    train_city_indices: Optional[list[int]] = None
+    val_city_indices: Optional[list[int]] = None
+    test_city_indices: Optional[list[int]] = None 
 
 
 @dataclass
@@ -109,9 +109,8 @@ class DatasetBundle:
 
     test_input: torch.Tensor
     test_target: torch.Tensor
-    test_x_mark: Optional[torch.Tensor]  # (city * num_samples, lookback, mark_dim) or None
-    test_y_mark: Optional[torch.Tensor]  # (city * num_samples,  horizon, mark_dim) or None; label_len is start from of timestep of lookback
-
+    test_x_mark: Optional[torch.Tensor] = None
+    test_y_mark: Optional[torch.Tensor] = None
 
     raw_x: torch.Tensor
     raw_y: torch.Tensor
@@ -130,8 +129,6 @@ class DatasetBundle:
     target_feature_names: list[str]
     input_feature_indices: list[int]
     target_feature_indices: list[int]
-
-    # NEW
     mark_feature_names: list[str]
     mark_feature_indices: list[int]
 

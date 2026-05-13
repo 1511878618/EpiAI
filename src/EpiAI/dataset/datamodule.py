@@ -1,7 +1,15 @@
-import torch
-from torch.utils.data import TensorDataset, DataLoader
+"""
+Lightning DataModule for city-by-city multi-target forecasting.
+"""
+
+from __future__ import annotations
+
 import lightning as L
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+
 from .builder import MultiTargetCityDatasetBuilder
+
 
 class ForecastDataModule(L.LightningDataModule):
     """

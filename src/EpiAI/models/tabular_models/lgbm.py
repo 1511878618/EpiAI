@@ -1,3 +1,9 @@
+"""
+LightGBM-based single-model forecaster with SHAP explainability.
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import shap
 import matplotlib.pyplot as plt
