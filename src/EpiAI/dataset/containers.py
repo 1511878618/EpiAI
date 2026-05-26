@@ -109,8 +109,6 @@ class DatasetBundle:
 
     test_input: torch.Tensor
     test_target: torch.Tensor
-    test_x_mark: Optional[torch.Tensor] = None
-    test_y_mark: Optional[torch.Tensor] = None
 
     raw_x: torch.Tensor
     raw_y: torch.Tensor
@@ -131,6 +129,8 @@ class DatasetBundle:
     target_feature_indices: list[int]
     mark_feature_names: list[str]
     mark_feature_indices: list[int]
+    test_x_mark: Optional[torch.Tensor] = None
+    test_y_mark: Optional[torch.Tensor] = None
 
 __all__ = [
     "DiseaseTensorData",
