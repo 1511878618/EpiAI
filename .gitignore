@@ -1,0 +1,108 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+# data/
+# C extensions
+*.so
+__pycache__
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+share/python-wheels/
+*.egg-info/
+*.egg
+MANIFEST
+*.egg-info
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# pyenv
+.python-version
+
+# virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# logs
+*.log
+
+# mypy / pyright / ruff
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.pyre/
+.dmypy.json
+dmypy.json
+
+# type checker / linter
+.pytype/
+
+# PEP 582
+__pypackages__/
+
+# build system
+*.spec
+
+# dotenv
+.env
+.env.*
+
+# local config
+*.local
+
+# data files
+# data/
+outputs/
+results/
+checkpoints/
+runs/
+wandb/
+tensorboard/
+logs/
+
+# model files
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# temporary files
+tmp/
+temp/
+*.tmp
