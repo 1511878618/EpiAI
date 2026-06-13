@@ -1,68 +1,174 @@
 """
-disease_forecasting
-===================
+EpiAI Dataset Module
+====================
 
-End-to-end dataset building pipeline for multi-target, city-by-city
-time-series forecasting.
+**Legacy pipeline** (requires PyTorch):
+    DatasetConfig, MultiTargetCityDatasetBuilder, ForecastDataModule, ...
 
-Typical usage
--------------
->>> from disease_forecasting import DatasetConfig, MultiTargetCityDatasetBuilder
->>> config = DatasetConfig(
-...     data_path="data/虫媒数据/Align_data_tensor_with_name.pt",
-...     target_feature_names=["...",],
-...     train_val_test_cutoff_line=(20, 27),
-... )
->>> bundle = MultiTargetCityDatasetBuilder(config).build()
+**New pipeline** (pandas/numpy only):
+    CsvLoader, FeatherLoader, TensorLoader, TimeSplit, EntitySplit,
+    EntityTimeSplit, StandardScaler, RobustScaler, Log1pTransform,
+    SlidingWindow, ForecastPipeline, ...
+
+Usage::
+
+    # New pipeline (no torch required)
+    from EpiAI.dataset import ForecastPipeline
+
+    bundle = ForecastPipeline.quick(
+        path="data.csv",
+        time_col="time",
+        target_cols="dengue",
+        feature_cols=["temp", "humid"],
+    )
 """
+
 from __future__ import annotations
 
-from .builder import MultiTargetCityDatasetBuilder
-from .config import DatasetConfig
-from .containers import (
-    CitySplitData,
-    DatasetBundle,
-    DiseaseTensorData,
-    WindowedData,
+# ============================================================================
+# New pipeline — zero heavy dependencies
+# ============================================================================
+
+from .base import Compose, DataLoader, SplitStrategy, Transform
+from .container import SplitResult, TimeSeriesData, WindowBundle
+from .loaders import CsvLoader, FeatherLoader, TensorLoader, load_data
+from .splits import (
+    CrossValidationSplit,
+    CustomIndexSplit,
+    EntitySplit,
+    EntityTimeSplit,
+    NoSplit,
+    TimeSplit,
 )
-from .inspector import DatasetInspector
-from .io import load_disease_tensor
-from .normalizer import TensorStandardScaler, normalize_split_data
-from .splitter import CitySplitter
-from .task_builder import FeatureTaskBuilder
-from .type_defs import DimType, InputFeatureMode, SplitMode
-from .utils import shuffle_training_data
-from .windowing import flatten_city_windows_for_training, make_sliding_windows
-from .datamodule import ForecastDataModule
+from .transforms import (
+    BoxCoxTransform,
+    DateFeatures,
+    FeatureLag,
+    Identity,
+    Log1pTransform,
+    RobustScaler,
+    SelectColumns,
+    SlidingWindow,
+    StandardScaler,
+    WindowArrays,
+)
+from .pipeline import ForecastPipeline, PipelineBundle
+
+# ============================================================================
+# Legacy pipeline — requires torch
+# ============================================================================
+
+# Lazily import torch-dependent components so that the module level
+# does not force torch to be installed.
+_LEGACY_LOADED = False
+
+
+def _load_legacy():
+    global _LEGACY_LOADED
+    if _LEGACY_LOADED:
+        return
+    from .builder import MultiTargetCityDatasetBuilder
+    from .config import DatasetConfig
+    from .containers import (
+        CitySplitData,
+        DatasetBundle,
+        DiseaseTensorData,
+        WindowedData,
+    )
+    from .inspector import DatasetInspector
+    from .io import load_disease_tensor
+    from .normalizer import TensorStandardScaler, normalize_split_data
+    from .splitter import CitySplitter
+    from .task_builder import FeatureTaskBuilder
+    from .type_defs import DimType, InputFeatureMode, SplitMode
+    from .utils import shuffle_training_data
+    from .windowing import flatten_city_windows_for_training, make_sliding_windows
+    from .datamodule import ForecastDataModule
+
+    # Inject into module namespace
+    import sys
+    mod = sys.modules[__name__]
+    for _name, _val in [
+        ("MultiTargetCityDatasetBuilder", MultiTargetCityDatasetBuilder),
+        ("DatasetConfig", DatasetConfig),
+        ("DiseaseTensorData", DiseaseTensorData),
+        ("CitySplitData", CitySplitData),
+        ("WindowedData", WindowedData),
+        ("DatasetBundle", DatasetBundle),
+        ("DatasetInspector", DatasetInspector),
+        ("load_disease_tensor", load_disease_tensor),
+        ("TensorStandardScaler", TensorStandardScaler),
+        ("normalize_split_data", normalize_split_data),
+        ("CitySplitter", CitySplitter),
+        ("FeatureTaskBuilder", FeatureTaskBuilder),
+        ("DimType", DimType),
+        ("InputFeatureMode", InputFeatureMode),
+        ("SplitMode", SplitMode),
+        ("shuffle_training_data", shuffle_training_data),
+        ("make_sliding_windows", make_sliding_windows),
+        ("flatten_city_windows_for_training", flatten_city_windows_for_training),
+        ("ForecastDataModule", ForecastDataModule),
+    ]:
+        setattr(mod, _name, _val)
+
+    _LEGACY_LOADED = True
+
+
+# Keep backward-compatible aliases so existing code still works.
+# Legacy imports will trigger lazy loading on first access, but
+# direct access at module level is also supported for explicit use.
+# Users can also do: ``from EpiAI.dataset import DatasetConfig``
+# which fails with a clear message if torch is missing.
+
 __all__ = [
-    # Lightning Dataset module
-    'ForecastDataModule',
-    # builder
+    # ── New pipeline ──
+    "TimeSeriesData",
+    "SplitResult",
+    "WindowBundle",
+    "DataLoader",
+    "SplitStrategy",
+    "Transform",
+    "Compose",
+    "CsvLoader",
+    "FeatherLoader",
+    "TensorLoader",
+    "load_data",
+    "TimeSplit",
+    "EntitySplit",
+    "EntityTimeSplit",
+    "CustomIndexSplit",
+    "NoSplit",
+    "CrossValidationSplit",
+    "Identity",
+    "StandardScaler",
+    "RobustScaler",
+    "Log1pTransform",
+    "BoxCoxTransform",
+    "SelectColumns",
+    "DateFeatures",
+    "FeatureLag",
+    "SlidingWindow",
+    "WindowArrays",
+    "ForecastPipeline",
+    "PipelineBundle",
+    # ── Legacy pipeline (lazy) ──
     "MultiTargetCityDatasetBuilder",
-    # config
     "DatasetConfig",
-    # containers
     "DiseaseTensorData",
     "CitySplitData",
     "WindowedData",
     "DatasetBundle",
-    # inspection
     "DatasetInspector",
-    # io
     "load_disease_tensor",
-    # normalizer
     "TensorStandardScaler",
     "normalize_split_data",
-    # splitter / task builder
     "CitySplitter",
     "FeatureTaskBuilder",
-    # typing
     "DimType",
     "InputFeatureMode",
     "SplitMode",
-    # utils
     "shuffle_training_data",
-    # windowing
     "make_sliding_windows",
     "flatten_city_windows_for_training",
+    "ForecastDataModule",
 ]
