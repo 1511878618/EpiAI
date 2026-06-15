@@ -57,6 +57,11 @@ class PipelineBundle:
     target_names : list of str
     transforms : list of Transform or None
         The transform pipeline that was applied (for inverse).
+    train_df : pd.DataFrame or None
+        Transformed (or original) training DataFrame, **not windowed**.
+        Used by TimeSeries (ARIMA/ETS) models that consume raw sequences.
+    val_df : pd.DataFrame or None
+    test_df : pd.DataFrame or None
     """
 
     data: TimeSeriesData
@@ -73,6 +78,30 @@ class PipelineBundle:
     target_names: List[str] = field(default_factory=list)
 
     transforms: Optional[Compose] = None
+
+    train_df: Optional[pd.DataFrame] = None
+    val_df: Optional[pd.DataFrame] = None
+    test_df: Optional[pd.DataFrame] = None
+
+    # ── Utility methods for TimeSeries (ARIMA/ETS) models ──────────
+
+    def get_y_series(self, split: str = "train") -> np.ndarray:
+        """Return the transformed raw time series ``(T, n_targets)``.
+
+        Unlike ``train_y`` (which is windowed into 3-D), this returns
+        the **flat** sequence.  Used by TS-paradigm models.
+        """
+        df = getattr(self, f"{split}_df")
+        if df is None:
+            raise ValueError(f"No {split}_df available; pipeline may not have saved it.")
+        return df[self.target_names].values.astype(np.float32)
+
+    def get_X_series(self, split: str = "train") -> np.ndarray:
+        """Return the transformed raw feature series ``(T, n_features)``."""
+        df = getattr(self, f"{split}_df")
+        if df is None:
+            raise ValueError(f"No {split}_df available; pipeline may not have saved it.")
+        return df[self.feature_names].values.astype(np.float32)
 
     @property
     def n_train(self) -> int:
@@ -256,6 +285,9 @@ class ForecastPipeline:
             feature_names=train_w.feature_names,
             target_names=train_w.target_names,
             transforms=self.transforms,
+            train_df=train_df,
+            val_df=val_df,
+            test_df=test_df,
         )
 
     # ── Convenience: quick one-shot without boilerplate ──────────────
