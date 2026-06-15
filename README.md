@@ -156,7 +156,7 @@ list_models("ts")           # 仅时间序列
 |------|------|
 | [数据管道](docs/data-pipeline-v2.md) | 数据加载、拆分、变换、滑窗详细说明 |
 | [架构设计](docs/architecture-v3.md) | 模型接口、注册系统、训练器设计 |
-| [入门教程](docs/tutorial-dengue.md) | 登革热预测完整流程 |
+| [入门教程](tutorial/tutorial-dengue.ipynb) | 登革热预测完整流程 |
 
 ---
 
