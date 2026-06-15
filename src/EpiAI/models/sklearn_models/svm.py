@@ -1,16 +1,21 @@
 """
-Linear Regression single-model time series forecaster.
+SVM-based single-model time series forecaster.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
+from sklearn.multioutput import MultiOutputRegressor
 
 
-class LinearRegForecaster:
+from EpiAI.models.base import SklearnMixin
+from EpiAI.models.registry import register
+
+@register("SVR", "svr", "SVM")
+class SVRForecaster(SklearnMixin):
     """
-    单模型线性回归时间序列预测器。
+    单模型 SVM 时间序列预测器。
 
     输入输出：
     - 输入:  (N, lookback, input_dim)
@@ -19,7 +24,7 @@ class LinearRegForecaster:
     特点：
     - 单模型同时预测 horizon * target_dim
     - 自动构造时序特征名
-    - 基于 OLS（普通最小二乘），支持原生多输出
+    - 内部使用 MultiOutputRegressor 包装 SVR
     """
 
     def __init__(
@@ -29,7 +34,7 @@ class LinearRegForecaster:
         horizon: int,
         target_dim: int = 1,
         input_feature_names: list[str] | None = None,
-        lr_params: dict | None = None,
+        svm_params: dict | None = None,
     ) -> None:
         self.input_dim = input_dim
         self.lookback = lookback
@@ -48,12 +53,32 @@ class LinearRegForecaster:
         self.input_feature_names = input_feature_names
         self.flatten_feature_names = self._build_flatten_feature_names()
 
-        if lr_params is None:
-            lr_params = dict(fit_intercept=True, n_jobs=-1)
+        if svm_params is None:
+            svm_params = dict(
+                kernel="rbf",
+                C=1.0,
+                epsilon=0.1,
+                gamma="scale",
+                tol=1e-3,
+                max_iter=-1,
+            )
 
-        self.model = LinearRegression(**lr_params)
+        base_estimator = SVR(**svm_params)
+        self.model = MultiOutputRegressor(base_estimator, n_jobs=-1)
 
     def _build_flatten_feature_names(self) -> list[str]:
+        """
+        构造 flatten 后的时序特征名。
+
+        例如：
+        lookback=3, input_feature_names=["temp", "rain"]
+        =>
+        [
+            "lag_2_temp", "lag_2_rain",
+            "lag_1_temp", "lag_1_rain",
+            "lag_0_temp", "lag_0_rain",
+        ]
+        """
         names = []
         for t in range(self.lookback):
             lag = self.lookback - 1 - t
@@ -121,14 +146,13 @@ class LinearRegForecaster:
         - x: (N, lookback, input_dim)
         - y: (N, horizon) 或 (N, horizon, target_dim)
 
-        注：LinearRegression 不支持 eval_set，val_x/val_y 仅保留接口一致性。
+        注：SVR 不支持 eval_set，val_x / val_y 保留仅用于接口一致性。
         """
         X = self._flatten_x(x)
         y = self._prepare_y(y)
-        # LinearRegression 原生支持 2D y，不需要手动 flatten
-        y_2d = y.reshape(y.shape[0], -1)
+        y_flat = y.reshape(y.shape[0], -1)
 
-        self.model.fit(X, y_2d)
+        self.model.fit(X, y_flat)
 
     def predict(self, x):
         """

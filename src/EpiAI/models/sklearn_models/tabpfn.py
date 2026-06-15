@@ -1,8 +1,18 @@
 import numpy as np
-from tabpfn import TabPFNRegressor
+try:
+    from tabpfn import TabPFNRegressor
+except ImportError:
+    _HAS_TABPFN = False
+else:
+    _HAS_TABPFN = True
 
 
-class TabPFNMultiForecaster:
+
+from EpiAI.models.base import SklearnMixin
+from EpiAI.models.registry import register
+
+@register("TabPFN", "tabpfn")
+class TabPFNMultiForecaster(SklearnMixin):
     """
     多模型 TabPFN 时间序列预测器
 

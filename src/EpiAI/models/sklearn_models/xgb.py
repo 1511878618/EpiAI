@@ -1,10 +1,26 @@
 import numpy as np
-import shap
-import matplotlib.pyplot as plt
-from xgboost import XGBRegressor
+try:
+    import shap
+except ImportError:
+    shap = None
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+try:
+    from xgboost import XGBRegressor
+except ImportError:
+    _HAS_XGBOOST = False
+else:
+    _HAS_XGBOOST = True
 
 
-class XGBSingleForecaster:
+
+from EpiAI.models.base import SklearnMixin
+from EpiAI.models.registry import register
+
+@register("XGB", "XGBoost", "xgb")
+class XGBSingleForecaster(SklearnMixin):
     """
     单模型 XGBoost 时间序列预测器（带 SHAP 可解释性）
 

@@ -1,16 +1,28 @@
 """
-LightGBM-based single-model time series forecaster.
+Single-model Random Forest forecaster with SHAP explainability.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from lightgbm import LGBMRegressor
+try:
+    import shap
+except ImportError:
+    shap = None
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+from sklearn.ensemble import RandomForestRegressor
 
 
-class LGBMSingleForecaster:
+from EpiAI.models.base import SklearnMixin
+from EpiAI.models.registry import register
+
+@register("RF", "RandomForest", "random_forest")
+class RandomForestForecaster(SklearnMixin):
     """
-    单模型 LightGBM 时间序列预测器。
+    单模型 Random Forest 时间序列预测器（带 SHAP 可解释性）
 
     输入输出：
     - 输入:  (N, lookback, input_dim)
@@ -19,6 +31,7 @@ class LGBMSingleForecaster:
     特点：
     - 单模型同时预测 horizon * target_dim
     - 自动构造时序特征名
+    - 内置 SHAP 全局 / 局部解释
     """
 
     def __init__(
@@ -28,7 +41,7 @@ class LGBMSingleForecaster:
         horizon: int,
         target_dim: int = 1,
         input_feature_names: list[str] | None = None,
-        lgbm_params: dict | None = None,
+        rf_params: dict | None = None,
     ) -> None:
         self.input_dim = input_dim
         self.lookback = lookback
@@ -47,19 +60,19 @@ class LGBMSingleForecaster:
         self.input_feature_names = input_feature_names
         self.flatten_feature_names = self._build_flatten_feature_names()
 
-        if lgbm_params is None:
-            lgbm_params = dict(
+        if rf_params is None:
+            rf_params = dict(
                 n_estimators=200,
-                learning_rate=0.05,
-                max_depth=-1,
-                num_leaves=31,
-                subsample=0.8,
-                colsample_bytree=0.8,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
                 random_state=42,
-                verbosity=-1,
+                n_jobs=-1,
             )
 
-        self.model = LGBMRegressor(**lgbm_params)
+        self.model = RandomForestRegressor(**rf_params)
+        self.explainer = None
 
     def _build_flatten_feature_names(self) -> list[str]:
         """
@@ -141,14 +154,15 @@ class LGBMSingleForecaster:
         - x: (N, lookback, input_dim)
         - y: (N, horizon) 或 (N, horizon, target_dim)
 
-        注：LightGBM sklearn API 在多输出场景下不支持 eval_set，
-        `val_x` / `val_y` 保留仅用于接口一致性。
+        注：RandomForestRegressor 不支持 eval_set，val_x/val_y 仅保留接口一致性。
         """
         X = self._flatten_x(x)
         y = self._prepare_y(y)
         y_flat = y.reshape(y.shape[0], -1)
 
         self.model.fit(X, y_flat)
+
+        self.explainer = shap.Explainer(self.model)
 
     def predict(self, x):
         """
