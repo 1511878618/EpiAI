@@ -10,7 +10,20 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **EpiAI** 是一个端到端的传染病爆发预测框架，支持深度学习、机器学习
-和传统时间序列模型。提供统一的数据管道、模型注册系统和训练入口。
+和传统时间序列模型。提供统一的数据管道、模型注册系统、训练入口、
+多模型管理（ModelVault）和生产部署运行时（DeploymentRuntime）。
+
+---
+
+## 特性
+
+- **统一数据管道** — CSV → 拆分 → 变换 → 滑窗，一行代码完成
+- **三大模型族** — 深度学习 (PyTorch)、机器学习 (sklearn)、时间序列 (ARIMA/ETS)，统一训练接口
+- **模型注册系统** — 29+ 个内置模型，通过 `@register` 一行扩展
+- **ModelVault** — 多模型存储、对比、批量推理
+- **DeploymentRuntime** — 生产级部署，统一数据表 + 时间连续性检查 + 持久化
+- **爆发感知损失** — 专门为传染病爆发期设计的损失函数
+- **多实体支持** — 单城市 / 多城市 / 按实体独立建模
 
 ---
 
@@ -111,16 +124,26 @@ EpiAITrainer(model=get("XGB")(...)).fit(bundle)
 EpiAITrainer(model=get("ETS")(seasonal_periods=12)).fit(bundle)
 ```
 
-### 推理部署
+### 模型管理与部署
 
 ```python
-# 部署
+# 单模型推理
 inferer = InferencePipeline.from_train_result(result)
 pred = inferer.predict(new_data_df)     # 对新数据预测
-
-# 持久化
 inferer.save("model.zip")
 inferer = InferencePipeline.load("model.zip")
+
+# 多模型管理
+vault = ModelVault.from_results({"RF": r_rf, "XGB": r_xgb}, bundle)
+vault.save("/tmp/vault/")
+vault.summary()                         # 对比表
+vault.best("R2")                        # 选最优模型
+
+# 生产部署
+runtime = DeploymentRuntime(vault, time_col="time")
+runtime.data_table = training_data       # 加载历史数据
+result = runtime.feed(new_data)          # 自动检查时间连续性并预测
+runtime.save("/tmp/runtime/")
 ```
 
 ---
@@ -154,9 +177,12 @@ list_models("ts")           # 仅时间序列
 
 | 文档 | 说明 |
 |------|------|
-| [数据管道](docs/data-pipeline-v2.md) | 数据加载、拆分、变换、滑窗详细说明 |
 | [架构设计](docs/architecture-v3.md) | 模型接口、注册系统、训练器设计 |
-| [入门教程](tutorial/tutorial-dengue.ipynb) | 登革热预测完整流程 |
+| [数据管道](docs/data-pipeline-v2.md) | 数据加载、拆分、变换、滑窗详细说明 |
+| [部署设计](docs/deployment-design.md) | 生产部署、时间连续性、统一数据表设计 |
+| [快速教程](tutorial/tutorial-dengue.ipynb) | 登革热快速体验：三族模型对比 + 最佳部署 |
+| [完整教程](tutorial/tutorial-full.ipynb) | 完整流程：留数据 → 训练 → 逐月 feed → 对比 |
+| [更新日志](CHANGELOG.md) | 版本历史与变更记录 |
 
 ---
 
