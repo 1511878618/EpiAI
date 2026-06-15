@@ -643,14 +643,24 @@ class DeploymentRuntime:
         for name, inferer in self.vault.models.items():
             try:
                 if inferer.paradigm == "ts":
-                    # TS: forecast from current state (no auto-update)
-                    raw = inferer.forecast(inferer.horizon)
+                    # TS: forecast from current state (no auto-update).
+                    # Each feed advances the prediction window:
+                    #   feed 1: forecast(horizon) → [t+1, t+2, t+3]
+                    #   feed 2: forecast(horizon+1) → take last 3 → [t+2, t+3, t+4]
+                    #   feed 3: forecast(horizon+2) → take last 3 → [t+3, t+4, t+5]
+                    n_fcst = inferer.horizon + self._feed_count
+                    raw = inferer.forecast(n_fcst)
+                    preds = np.asarray(raw, dtype=np.float32)
+                    # Take the last horizon steps that correspond to NOW + future
+                    preds = preds[-inferer.horizon:]
+                    if preds.ndim == 1:
+                        preds = preds[:, None]
                     future = pd.date_range(
                         start=last_time + self._time_delta,
                         periods=inferer.horizon,
                         freq=self._time_delta,
                     )
-                    results[name] = {"time": future, "pred": np.asarray(raw)[:, 0, 0]}
+                    results[name] = {"time": future, "pred": preds[:, 0]}
 
                 else:
                     # Window model: pull last lookback rows
