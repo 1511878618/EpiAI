@@ -3,6 +3,7 @@ try:
 except ImportError:
     ETSModel = None
 import numpy as np
+import pandas as pd
 
 from EpiAI.models.base import TSMixin
 from EpiAI.models.registry import register
@@ -62,7 +63,7 @@ class ETSForecaster(TSMixin):
         self._result = model.fit(disp=False)
         return self
 
-    def predict(self, y_test, X_test=None, return_df=True):
+    def predict_sequence(self, y_test, X_test=None, update_state=True, return_df=True):
         """在训练集上直接 forecast horizon 步，与 y_test 比较。"""
         if self._result is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
