@@ -87,11 +87,27 @@ class BaseForecaster(ABC):
 # =====================================================================
 
 class TorchMixin(BaseForecaster):
-    """Mixin for PyTorch models."""
+    """Mixin for PyTorch models.
+
+    Provides a default ``predict()`` that runs ``forward()`` and
+    returns a numpy array.  Subclasses may override for custom logic.
+    """
 
     @classmethod
     def paradigm(cls) -> Literal["torch"]:
         return "torch"
+
+    def predict(self, x) -> np.ndarray:
+        try:
+            import torch
+        except ImportError:
+            raise ImportError("PyTorch is required for torch models.")
+
+        self.eval()
+        with torch.no_grad():
+            x_t = torch.tensor(x, dtype=torch.float32)
+            pred = self.forward(x_t)
+            return pred.cpu().numpy()
 
 
 class SklearnMixin(BaseForecaster):
