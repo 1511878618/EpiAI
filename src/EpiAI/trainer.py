@@ -257,65 +257,18 @@ class EpiAITrainer:
         n = predictions.shape[0]
         y_true = bundle.get_y_series("test")[:n]
 
-        # Simple per-column inverse when transforms exist
-        if bundle.transforms is not None and hasattr(bundle.transforms, "inverse"):
-            try:
-                for i, tn in enumerate(bundle.target_names):
-                    col_pred = f"{tn}_pred"
-                    inv_df = pd.DataFrame(
-                        np.column_stack([y_true[:, i], predictions[:, -1, i]]),
-                        columns=[tn, col_pred],
-                    )
-                    inv_df = bundle.transforms.inverse(inv_df)
-                    predictions[:, -1, i] = inv_df[col_pred].values
-                    y_true[:, i] = inv_df[tn].values
-            except Exception:
-                pass  # fall back to raw predictions
+        # Inverse-transform using shared helper
+        predictions = inverse_predictions(
+            predictions, bundle.target_names, bundle.transforms, y_true=y_true,
+        )
 
-        metrics = self._compute_metrics(y_true, predictions, bundle.target_names)
+        metrics = _compute_metrics(y_true, predictions, bundle.target_names)
         return TrainResult(
             model=self.model,
             predictions=predictions,
             metrics=metrics,
             history=getattr(self, "_history", None),
         )
-
-    def _compute_metrics(self, y_true, y_pred, target_names) -> pd.DataFrame:
-        # y_true: (N, target_dim) or (N,)
-        # y_pred: (N, horizon, target_dim) or (N, horizon)
-        rows = []
-        for i, tgt in enumerate(target_names):
-            if y_pred.ndim == 3:
-                yp = y_pred[:, :, i].ravel()  # (N * horizon,)
-            else:
-                yp = y_pred.ravel()
-
-            if y_true.ndim == 2:
-                yt = y_true[:, i]
-            else:
-                yt = y_true
-
-            # Repeat y_true to match horizon-expanded y_pred
-            if len(yp) > len(yt) and len(yp) % len(yt) == 0:
-                yt = np.tile(yt, len(yp) // len(yt))
-
-            # Truncate to same length
-            min_len = min(len(yp), len(yt))
-            yp, yt = yp[:min_len], yt[:min_len]
-
-            error = yp - yt
-            mae = float(np.mean(np.abs(error)))
-            rmse = float(np.sqrt(np.mean(error ** 2)))
-            nonzero = yt != 0
-            mape = float(np.mean(np.abs(error[nonzero] / yt[nonzero]))) * 100 if nonzero.sum() > 0 else np.nan
-            ss_res = np.sum(error ** 2)
-            ss_tot = np.sum((yt - np.mean(yt)) ** 2)
-            r2 = float(1 - ss_res / ss_tot) if ss_tot != 0 else np.nan
-            corr = float(np.corrcoef(yt, yp)[0, 1]) if len(yt) >= 2 and np.std(yt) > 0 and np.std(yp) > 0 else np.nan
-
-            rows.append({"target": tgt, "MAE": mae, "RMSE": rmse,
-                         "MAPE": mape, "R2": r2, "PearsonR": corr, "n": len(yt)})
-        return pd.DataFrame(rows)
 
     def _resolve_device(self):
         if self.device != "auto":
@@ -363,6 +316,99 @@ class EpiAITrainer:
                 total_loss += loss.item() * x.size(0)
                 total += x.size(0)
         return total_loss / max(total, 1)
+
+
+# ── Shared inverse helper (used by Trainer and InferencePipeline) ──
+
+def inverse_predictions(
+    predictions: np.ndarray,
+    target_names: List[str],
+    transforms: Any,
+    y_true: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Inverse-transform predictions per target column.
+
+    Parameters
+    ----------
+    predictions : np.ndarray, shape ``(N, horizon, target_dim)``
+        Model output in transformed space.
+    target_names : list of str
+        Target column names.
+    transforms : Compose or None
+        Fitted transform pipeline.
+    y_true : np.ndarray or None, shape ``(N, target_dim)``
+        If provided, also inverse-transform y_true (for metrics).
+        If None, only predictions are inverse-transformed (inference).
+
+    Returns
+    -------
+    np.ndarray
+        Predictions in original scale (``y_true`` is modified in-place
+        when provided).
+    """
+    if transforms is None or not hasattr(transforms, "inverse"):
+        return predictions
+
+    predictions = predictions.copy()
+    try:
+        for i, tn in enumerate(target_names):
+            col_pred = f"{tn}_pred"
+            inv_df = pd.DataFrame(
+                np.column_stack([predictions[:, -1, i]] * 2),
+                columns=[tn, col_pred],
+            )
+            inv_df = transforms.inverse(inv_df)
+            predictions[:, -1, i] = inv_df[col_pred].values
+
+            if y_true is not None:
+                inv_y = pd.DataFrame(
+                    np.column_stack([y_true[:, i]] * 2),
+                    columns=[tn, col_pred],
+                )
+                inv_y = transforms.inverse(inv_y)
+                y_true[:, i] = inv_y[tn].values
+    except Exception:
+        pass  # fall back to raw predictions if inverse fails
+
+    return predictions
+
+
+def _compute_metrics(y_true, y_pred, target_names) -> pd.DataFrame:
+    # y_true: (N, target_dim) or (N,)
+    # y_pred: (N, horizon, target_dim) or (N, horizon)
+    rows = []
+    for i, tgt in enumerate(target_names):
+        if y_pred.ndim == 3:
+            yp = y_pred[:, :, i].ravel()  # (N * horizon,)
+        else:
+            yp = y_pred.ravel()
+
+        if y_true.ndim == 2:
+            yt = y_true[:, i]
+        else:
+            yt = y_true
+
+        # Repeat y_true to match horizon-expanded y_pred
+        if len(yp) > len(yt) and len(yp) % len(yt) == 0:
+            yt = np.tile(yt, len(yp) // len(yt))
+
+        # Truncate to same length
+        min_len = min(len(yp), len(yt))
+        yp, yt = yp[:min_len], yt[:min_len]
+
+        error = yp - yt
+        mae = float(np.mean(np.abs(error)))
+        rmse = float(np.sqrt(np.mean(error ** 2)))
+        nonzero = yt != 0
+        mape = float(np.mean(np.abs(error[nonzero] / yt[nonzero]))) * 100 if nonzero.sum() > 0 else np.nan
+        ss_res = np.sum(error ** 2)
+        ss_tot = np.sum((yt - np.mean(yt)) ** 2)
+        r2 = float(1 - ss_res / ss_tot) if ss_tot != 0 else np.nan
+        corr = float(np.corrcoef(yt, yp)[0, 1]) if len(yt) >= 2 and np.std(yt) > 0 and np.std(yp) > 0 else np.nan
+
+        rows.append({"target": tgt, "MAE": mae, "RMSE": rmse,
+                     "MAPE": mape, "R2": r2, "PearsonR": corr, "n": len(yt)})
+    return pd.DataFrame(rows)
 
 
 __all__ = ["EpiAITrainer", "TrainResult"]

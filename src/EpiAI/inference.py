@@ -1,5 +1,6 @@
 """
 InferencePipeline — run predictions on new data with a trained model.
+ModelVault — store, compare, and deploy multiple trained models.
 
 Usage::
 
@@ -19,6 +20,12 @@ Usage::
     # Persist
     inferer.save("model_package.zip")
     inferer = InferencePipeline.load("model_package.zip")
+
+    # Multi-model vault
+    vault = ModelVault.from_results({"RF": result_rf, "XGB": result_xgb}, bundle)
+    vault.save("/tmp/dengue_vault/")
+    vault.summary()                         # comparison table
+    vault.predict_all(new_data)             # all models at once
 """
 
 from __future__ import annotations
@@ -336,28 +343,10 @@ class InferencePipeline:
         return self.transforms.transform(df)
 
     def _inverse_target(self, preds: np.ndarray) -> np.ndarray:
-        """Inverse-transform prediction columns only.
+        """Inverse-transform prediction columns using the shared helper."""
+        from EpiAI.trainer import inverse_predictions as _inv
 
-        Works column-by-column to avoid transform mismatches
-        (scalers fitted on features may not have the same columns).
-        """
-        if self.transforms is None:
-            return preds
-
-        preds = preds.copy()
-        n, h, t = preds.shape
-        for i, tn in enumerate(self.target_names):
-            col_pred = f"{tn}_pred"
-            inv_df = pd.DataFrame(
-                np.column_stack([preds[:, -1, i], preds[:, -1, i]]),
-                columns=[tn, col_pred],
-            )
-            try:
-                inv_df = self.transforms.inverse(inv_df)
-                preds[:, -1, i] = inv_df[col_pred].values
-            except Exception:
-                pass  # keep raw value if inverse fails
-        return preds
+        return _inv(preds, self.target_names, self.transforms, y_true=None)
 
     def __repr__(self) -> str:
         return (
@@ -368,4 +357,208 @@ class InferencePipeline:
         )
 
 
-__all__ = ["InferencePipeline"]
+# =====================================================================
+# ModelVault — multi-model store, compare & deploy
+# =====================================================================
+
+class ModelVault:
+    """Store, compare, and deploy multiple trained models.
+
+    Directory structure::
+
+        /path/to/vault/
+        ├── manifest.json            # all models with metrics
+        ├── RF/
+        │   ├── model.zip            # InferencePipeline package
+        │   └── meta.json            # training parameters
+        └── ...
+
+    Parameters
+    ----------
+    models : dict of str → InferencePipeline
+        Name → inference pipeline map.
+    metrics : pd.DataFrame
+        Comparison table (model × MAE/RMSE/R²/PearsonR/n).
+    bundle : PipelineBundle
+        The original data bundle used for training.
+    """
+
+    def __init__(
+        self,
+        models: Dict[str, InferencePipeline],
+        metrics: pd.DataFrame,
+        bundle: Any,
+    ) -> None:
+        self.models = models
+        self.metrics = metrics
+        self.bundle = bundle
+
+    # ── Factory ─────────────────────────────────────────────────
+
+    @classmethod
+    def from_results(
+        cls,
+        results: Dict[str, "TrainResult"],
+        bundle: Any,
+    ) -> "ModelVault":
+        """Build from a dict of ``{model_name: TrainResult}``.
+
+        Each result gets an attached ``_bundle`` if not already set.
+        """
+        pipelines: Dict[str, InferencePipeline] = {}
+        rows = []
+
+        for name, result in results.items():
+            if not hasattr(result, "_bundle") or result._bundle is None:
+                result._bundle = bundle
+            pip = InferencePipeline.from_train_result(result)
+            pipelines[name] = pip
+
+            m = result.metrics.iloc[0]
+            rows.append({
+                "model": name,
+                "paradigm": result.model.paradigm(),
+                "MAE": m["MAE"],
+                "RMSE": m["RMSE"],
+                "MAPE": m.get("MAPE", float("nan")),
+                "R2": m["R2"],
+                "PearsonR": m["PearsonR"],
+                "n": m["n"],
+            })
+
+        metrics = pd.DataFrame(rows).set_index("model")
+        return cls(pipelines, metrics, bundle)
+
+    # ── Query ───────────────────────────────────────────────────
+
+    def summary(self) -> pd.DataFrame:
+        """Return comparison table (sorted by R² descending)."""
+        return self.metrics.sort_values("R2", ascending=False)
+
+    def best(self, metric: str = "R2") -> str:
+        """Return the name of the best model by *metric*.  Higher is better."""
+        best_name = self.metrics[metric].idxmax()
+        return best_name  # type: ignore[no-any-return]
+
+    def get(self, name: str) -> InferencePipeline:
+        """Get a specific model's inference pipeline."""
+        return self.models[name]
+
+    def __getitem__(self, name: str) -> InferencePipeline:
+        return self.models[name]
+
+    # ── Batch inference ────────────────────────────────────────
+
+    def predict_all(
+        self,
+        new_data: Optional[pd.DataFrame] = None,
+        steps: int = 6,
+    ) -> Dict[str, np.ndarray]:
+        """Run inference on all models and return ``{name: predictions}``.
+
+        For window-based (torch/sklearn) models: pass ``new_data``
+        with feature columns.  For TS models: pass ``steps``.
+        """
+        out: Dict[str, np.ndarray] = {}
+        for name, pip in self.models.items():
+            if pip.paradigm == "ts":
+                out[name] = pip.forecast(steps)
+            else:
+                out[name] = pip.predict(new_data)
+        return out
+
+    # ── Persistence ────────────────────────────────────────────
+
+    def save(self, path: Union[str, Path]) -> str:
+        """Save all models to a vault directory.
+
+        Parameters
+        ----------
+        path : str or Path
+            Directory path (created if it doesn't exist).
+
+        Returns
+        -------
+        str
+            Absolute path to the vault directory.
+        """
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+
+        # Save each model
+        for name, pip in self.models.items():
+            model_dir = path / name
+            model_dir.mkdir(exist_ok=True)
+            pip.save(str(model_dir / "model.zip"))
+
+            # Build training metadata
+            meta = {
+                "model": name,
+                "paradigm": pip.paradigm,
+                "model_class": f"{type(pip.model).__module__}.{type(pip.model).__name__}",
+                "lookback": pip.lookback,
+                "horizon": pip.horizon,
+                "n_features": len(pip.feature_names),
+                "n_targets": len(pip.target_names),
+                "feature_names": pip.feature_names,
+                "target_names": pip.target_names,
+            }
+            if name in self.metrics.index:
+                row = self.metrics.loc[name]
+                meta["metrics"] = {
+                    k: float(v) if isinstance(v, (np.floating, float))
+                    else int(v) if isinstance(v, (np.integer, int))
+                    else v
+                    for k, v in row.to_dict().items()
+                    if k != "model"
+                }
+            (model_dir / "meta.json").write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False)
+            )
+
+        # Save manifest
+        manifest = {
+            "models": list(self.models.keys()),
+            "n_models": len(self.models),
+            "created": str(pd.Timestamp.now()),
+        }
+
+        # Metrics table as an ordered list of dicts
+        manifest["metrics"] = {
+            name: {
+                k: float(v) if isinstance(v, (np.floating, float))
+                else int(v) if isinstance(v, (np.integer, int))
+                else v
+                for k, v in row.to_dict().items()
+            }
+            for name, row in self.metrics.iterrows()
+        }
+
+        (path / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False)
+        )
+
+        return str(path.resolve())
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "ModelVault":
+        """Load a vault directory created by ``save()``."""
+        path = Path(path)
+        manifest = json.loads((path / "manifest.json").read_text())
+
+        metrics = pd.DataFrame(manifest["metrics"]).T
+        metrics.index.name = "model"
+
+        models: Dict[str, InferencePipeline] = {}
+        for name in manifest["models"]:
+            model_zip = path / name / "model.zip"
+            if model_zip.exists():
+                models[name] = InferencePipeline.load(str(model_zip))
+
+        return cls(models, metrics, bundle=None)
+
+    def __repr__(self) -> str:
+        return f"ModelVault({len(self.models)} models, {len(self.metrics.columns)} metrics)"
+
+
+__all__ = ["InferencePipeline", "ModelVault"]
