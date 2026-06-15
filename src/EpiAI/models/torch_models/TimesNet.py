@@ -1,28 +1,56 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
-import torch.fft
-
-from EpiAI.layers.Embed import DataEmbedding
-from EpiAI.layers.Conv_Blocks import Inception_Block_V1
-
-
-def FFT_for_Period(x: torch.Tensor, k: int = 2):
-    """
+"""
     x: [B, T, C]
     """
-    xf = torch.fft.rfft(x, dim=1)
-    frequency_list = abs(xf).mean(0).mean(-1)
-    frequency_list[0] = 0
 
-    _, top_list = torch.topk(frequency_list, k)
-    top_list = top_list.detach().cpu()
-    top_list = torch.clamp(top_list, min=1)
+from __future__ import annotations
 
-    period = (x.shape[1] // top_list).to(torch.long)
-    return period.tolist(), abs(xf).mean(-1)[:, top_list]
 
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    torch = None
+    class _MockModule:
+        class Module:
+            pass
+        class Linear:
+            pass
+        class Dropout:
+            pass
+        class ModuleList:
+            pass
+        class Identity:
+            pass
+        ReLU = Gelu = Sigmoid = Softplus = Tanh = Identity
+        BatchNorm1d = LayerNorm = Identity
+        Sequential = Identity
+        class Parameter:
+            pass
+        class init:
+            @staticmethod
+            def xavier_uniform_(x): return x
+            kaiming_uniform_ = zeros_ = ones_ = normal_ = xavier_uniform_
+        class functional:
+            @staticmethod
+            def relu(x): return x
+        functional.relu = staticmethod(lambda x: x)
+    nn = _MockModule
+    class _MockF:
+        @staticmethod
+        def relu(x): return x
+    F = _MockF
+try:
+    from EpiAI.layers.Embed import DataEmbedding
+except ImportError:
+    pass
+try:
+    from EpiAI.layers.Conv_Blocks import Inception_Block_V1
+except ImportError:
+    pass
+
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
 
 class TimesBlock(nn.Module):
     def __init__(
@@ -84,7 +112,11 @@ class TimesBlock(nn.Module):
         return res + x
 
 
-class TimesNetForecaster(nn.Module):
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
+
+@register("TimesNet", "timesnet")
+class TimesNetForecaster(nn.Module, TorchMixin):
     """
     基于 TimesNet 的时间序列预测模型
 

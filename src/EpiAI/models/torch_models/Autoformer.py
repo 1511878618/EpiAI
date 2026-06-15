@@ -2,14 +2,63 @@
 Source: https://github.com/thuml/Time-Series-Library/blob/main/models/Autoformer.py
 Refactored for EpiAI integration.
 """
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from EpiAI.layers.Embed import DataEmbedding_wo_pos
-from EpiAI.layers.AutoCorrelation import AutoCorrelation, AutoCorrelationLayer
-from EpiAI.layers.Autoformer_EncDec import Encoder, Decoder, EncoderLayer, DecoderLayer, my_Layernorm, series_decomp
 
-class AutoformerForecaster(nn.Module):
+from __future__ import annotations
+
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    torch = None
+    class _MockModule:
+        class Module:
+            pass
+        class Linear:
+            pass
+        class Dropout:
+            pass
+        class ModuleList:
+            pass
+        class Identity:
+            pass
+        ReLU = Gelu = Sigmoid = Softplus = Tanh = Identity
+        BatchNorm1d = LayerNorm = Identity
+        Sequential = Identity
+        class Parameter:
+            pass
+        class init:
+            @staticmethod
+            def xavier_uniform_(x): return x
+            kaiming_uniform_ = zeros_ = ones_ = normal_ = xavier_uniform_
+        class functional:
+            @staticmethod
+            def relu(x): return x
+        functional.relu = staticmethod(lambda x: x)
+    nn = _MockModule
+    class _MockF:
+        @staticmethod
+        def relu(x): return x
+    F = _MockF
+try:
+    from EpiAI.layers.AutoCorrelation import AutoCorrelation, AutoCorrelationLayer
+except ImportError:
+    pass
+try:
+    from EpiAI.layers.Embed import DataEmbedding_wo_pos
+except ImportError:
+    pass
+try:
+    from EpiAI.layers.Autoformer_EncDec import Encoder, Decoder, EncoderLayer, DecoderLayer, my_Layernorm, series_decomp
+except ImportError:
+    pass
+
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
+
+@register("Autoformer", "autoformer")
+class AutoformerForecaster(nn.Module, TorchMixin):
     """
     Paper link: https://openreview.net/pdf?id=I55UqU-M11y
     """

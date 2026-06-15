@@ -1,8 +1,50 @@
-import torch
-import torch.nn as nn
+"""
+Transformer
+"""
+
+from __future__ import annotations
 
 
-class TransformerForecaster(nn.Module):
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    torch = None
+    class _MockModule:
+        class Module:
+            pass
+        class Linear:
+            pass
+        class Dropout:
+            pass
+        class ModuleList:
+            pass
+        class Identity:
+            pass
+        ReLU = Gelu = Sigmoid = Softplus = Tanh = Identity
+        BatchNorm1d = LayerNorm = Identity
+        Sequential = Identity
+        class Parameter:
+            pass
+        class init:
+            @staticmethod
+            def xavier_uniform_(x): return x
+            kaiming_uniform_ = zeros_ = ones_ = normal_ = xavier_uniform_
+        class functional:
+            @staticmethod
+            def relu(x): return x
+        functional.relu = staticmethod(lambda x: x)
+    nn = _MockModule
+    class _MockF:
+        @staticmethod
+        def relu(x): return x
+    F = _MockF
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
+
+@register("Transformer", "transformer")
+class TransformerForecaster(nn.Module, TorchMixin):
     """
     基于 Transformer Encoder 的时间序列预测模型
 
@@ -97,7 +139,5 @@ class TransformerForecaster(nn.Module):
         for layer in self.children():
             if hasattr(layer, "reset_parameters"):
                 layer.reset_parameters()
-
-
 
 

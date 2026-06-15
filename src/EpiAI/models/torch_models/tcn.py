@@ -4,9 +4,44 @@ Temporal Convolutional Network (TCN) for time series forecasting.
 
 from __future__ import annotations
 
-import torch
-import torch.nn as nn
 
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    torch = None
+    class _MockModule:
+        class Module:
+            pass
+        class Linear:
+            pass
+        class Dropout:
+            pass
+        class ModuleList:
+            pass
+        class Identity:
+            pass
+        ReLU = Gelu = Sigmoid = Softplus = Tanh = Identity
+        BatchNorm1d = LayerNorm = Identity
+        Sequential = Identity
+        class Parameter:
+            pass
+        class init:
+            @staticmethod
+            def xavier_uniform_(x): return x
+            kaiming_uniform_ = zeros_ = ones_ = normal_ = xavier_uniform_
+        class functional:
+            @staticmethod
+            def relu(x): return x
+        functional.relu = staticmethod(lambda x: x)
+    nn = _MockModule
+    class _MockF:
+        @staticmethod
+        def relu(x): return x
+    F = _MockF
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
 
 class TemporalBlock(nn.Module):
     """
@@ -45,7 +80,11 @@ class TemporalBlock(nn.Module):
         return torch.relu(out + self.downsample(x))
 
 
-class TCNForecaster(nn.Module):
+from EpiAI.models.base import TorchMixin
+from EpiAI.models.registry import register
+
+@register("TCN", "tcn")
+class TCNForecaster(nn.Module, TorchMixin):
     """
     Temporal Convolutional Network (TCN) for Time Series Forecasting.
 
