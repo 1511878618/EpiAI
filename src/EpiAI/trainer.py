@@ -206,14 +206,19 @@ class EpiAITrainer:
         y_train = bundle.get_y_series("train").squeeze()
         y_test = bundle.get_y_series("test").squeeze()
 
-        # For TS models, don't pass features that overlap with targets
-        # (otherwise ARIMA sees future target values as exogenous variables)
-        _is_pure_ar = set(bundle.feature_names) == set(bundle.target_names)
-        if _is_pure_ar:
-            X_train = X_test = None
-        else:
-            X_train = bundle.get_X_series("train") if bundle.feature_names else None
-            X_test = bundle.get_X_series("test") if bundle.feature_names else None
+        # TS models (ARIMA/ETS) do not support target columns as features.
+        # Passing them as exogenous variables leaks future values.
+        _overlap = set(bundle.feature_names) & set(bundle.target_names)
+        if _overlap:
+            raise ValueError(
+                f"TS models cannot have target columns in feature_names. "
+                f"Overlap: {_overlap}. "
+                f"Use feature columns that are not also targets, "
+                f"or remove transforms that add target columns back."
+            )
+
+        X_train = bundle.get_X_series("train") if bundle.feature_names else None
+        X_test = bundle.get_X_series("test") if bundle.feature_names else None
 
         # Try with X features first, fall back to univariate
         try:
