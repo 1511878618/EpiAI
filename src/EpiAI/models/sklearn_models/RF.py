@@ -162,7 +162,8 @@ class RandomForestForecaster(SklearnMixin):
 
         self.model.fit(X, y_flat)
 
-        self.explainer = shap.Explainer(self.model)
+        if shap is not None:
+            self.explainer = shap.Explainer(self.model)
 
     def predict(self, x):
         """
