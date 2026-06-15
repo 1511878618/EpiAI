@@ -399,6 +399,9 @@ def _bundle_from_dfs(
         feature_names=feat,
         target_names=tgt,
         transforms=transforms,
+        train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
     )
 
 
