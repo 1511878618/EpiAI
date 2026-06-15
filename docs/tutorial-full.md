@@ -1,6 +1,7 @@
 # EpiAI 完整流程教程
 
-> 从数据加载到生产部署的端到端示例 —— 全国登革热月发病数预测。
+> 从数据加载到生产部署的端到端示例。留出最后 12 个月的真实数据
+> 作为部署模拟数据，直观展示「训练 → 部署 → 逐月 feed → 对比验证」。
 
 ---
 
@@ -14,7 +15,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# 注册所有模型
 from EpiAI.models import sklearn_models, ts_models
 from EpiAI.models import torch_models          # 需要 PyTorch
 
@@ -32,7 +32,9 @@ print(f"已注册模型: {len(list_models())}")
 
 ---
 
-## 2. 数据加载
+## 2. 数据加载与拆留
+
+留出最后 12 个月作为部署验证数据，前面的用于训练。
 
 ```python
 CSV = "../data/Infective_disease_china-V3.csv"
@@ -49,49 +51,38 @@ print(f"登革热: {len(df)} 个月 ({df['time'].min().date()} ~ {df['time'].max
 print(f"病例数: 最小={df['cases'].min():.0f}, 最大={df['cases'].max():.0f}, "
       f"均值={df['cases'].mean():.0f}")
 
+# ── 留出最后 12 个月作为部署模拟数据 ──
+N_HELD_OUT = 12
+df_train = df.iloc[:-N_HELD_OUT].copy()     # 用于训练
+df_deploy = df.iloc[-N_HELD_OUT:].copy()    # 用于部署验证
+
+print(f"\n训练数据: {len(df_train)} 个月 ({df_train['time'].min().date()} ~ {df_train['time'].max().date()})")
+print(f"部署数据: {len(df_deploy)} 个月 ({df_deploy['time'].min().date()} ~ {df_deploy['time'].max().date()})  ← 留出的验证集")
+
 plt.figure(figsize=(14, 4))
-plt.plot(df["time"], df["cases"], color="#2c3e50")
+plt.plot(df["time"], df["cases"], color="#2c3e50", label="全部数据")
+plt.axvline(x=df_deploy["time"].iloc[0], color="red", linestyle="--", alpha=0.6, label="部署验证开始")
 plt.title("全国登革热月发病数 (2010–2026)", fontsize=13)
-plt.ylabel("病例数"); plt.grid(alpha=0.3); plt.show()
+plt.ylabel("病例数"); plt.legend(); plt.grid(alpha=0.3); plt.show()
 ```
 
 ---
 
 ## 3. 数据管道
 
-纯自回归（用历史病例预测未来病例），不做特征工程，让 baseline 清晰。
-
 ```python
-df.to_csv("/tmp/dengue.csv", index=False)
+df_train.to_csv("/tmp/dengue_train.csv", index=False)
 
 bundle = ForecastPipeline(
     loader=CsvLoader(time_col="time", target_cols="cases",
                      feature_cols="cases"),
     split=TimeSplit(train_ratio=0.7, val_ratio=0.15),
-    transforms=None,                                # 无变换
-    window=SlidingWindow(lookback=12, horizon=3),   # 用过去一年预测未来一季度
-).run("/tmp/dengue.csv")
+    transforms=None,
+    window=SlidingWindow(lookback=12, horizon=3),
+).run("/tmp/dengue_train.csv")
 
 print(f"训练窗口: {bundle.train_x.shape}  验证: {bundle.val_x.shape}  测试: {bundle.test_x.shape}")
 print(f"lookback={bundle.lookback}, horizon={bundle.horizon}, features={bundle.n_features}")
-```
-
-如果用标准化的数据管道（可选的）：
-
-```python
-bundle2 = ForecastPipeline(
-    loader=CsvLoader(time_col="time", target_cols="cases",
-                     feature_cols="cases"),
-    split=TimeSplit(train_ratio=0.7, val_ratio=0.15),
-    transforms=Compose([
-        Log1pTransform(columns=["cases"]),             # 对数变换（偏态分布）
-        StandardScaler(columns=["cases"]),              # 标准化
-        DateFeatures(time_col="time", features=["month", "season"]),  # 时间特征
-        FeatureLag(columns=["cases"], lags=[1, 2, 3, 6, 12]),        # 滞后特征
-    ]),
-    window=SlidingWindow(lookback=12, horizon=3),
-).run("/tmp/dengue.csv")
-print(f"特征管道: {bundle2.n_features} 个特征")
 ```
 
 ---
@@ -173,24 +164,18 @@ print(f"\n最佳模型: {best_name}")
 ## 6. 可视化：历史与预测
 
 ```python
-# 时间轴
 all_time = bundle.train_df["time"].tolist() + bundle.test_df["time"].tolist()
 y_all = np.concatenate([bundle.get_y_series("train").ravel(),
                         bundle.get_y_series("test").ravel()])
 
 plt.figure(figsize=(14, 7))
-
-# 训练集
 plt.plot(all_time[:len(bundle.train_df)], y_all[:len(bundle.train_df)],
          "-", label="训练集", color="#bdc3c7", alpha=0.5)
-
-# 测试集实际
 test_start = len(bundle.train_df)
 test_time = all_time[test_start:]
 test_actual = bundle.get_y_series("test").ravel()
 plt.plot(test_time, test_actual, "o-", label="实际值", color="black", linewidth=2)
 
-# 各模型预测
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for (name, r), color in zip(results.items(), colors):
     preds = r.predictions[:, 0, 0]
@@ -209,58 +194,97 @@ plt.show()
 
 ---
 
-## 7. 生产部署
+## 7. 生产部署模拟
+
+用留出的 12 个月真实数据模拟生产环境逐月 feed。
 
 ```python
-# 初始化运行时
 runtime = DeploymentRuntime(
     vault=vault,
     time_col="time",
     time_unit="MS",
     strict=True,
 )
+# 训练数据最后一条的时间
+runtime._train_end_time = df_train["time"].iloc[-1]
+print(f"训练结束: {runtime._train_end_time.date()}")
+print(f"部署开始: {df_deploy['time'].iloc[0].date()}")
 
-# 设置训练结束时间（首次 feed 会检查连续性）
-runtime._train_end_time = pd.to_datetime("2026-03-01")
+# ── 逐月 feed 留出的真实数据 ──
+history = []  # 记录每次 predict 的结果
 
-# 模拟：每月新数据到达，逐月 feed
-np.random.seed(42)
-for i in range(14):  # 14 个月（含 12 个 lookback + 2 个预测验证）
-    month = pd.Timestamp("2026-04-01") + pd.DateOffset(months=i)
-    new_cases = int(np.random.normal(1000, 300))  # 模拟真实上报
-    new_row = pd.DataFrame({"time": [month.strftime("%Y-%m-%d")],
-                            "cases": [new_cases]})
+for i in range(len(df_deploy)):
+    row = df_deploy.iloc[i]
+    new_data = pd.DataFrame({
+        "time": [row["time"].strftime("%Y-%m-%d")],
+        "cases": [row["cases"]],
+    })
 
-    result = runtime.feed(new_row)
-    print(f"{month.strftime('%Y-%m')}: 实报={new_cases:5d}", end="")
+    result = runtime.feed(new_data)
+
+    month_label = row["time"].strftime("%Y-%m")
+    actual = int(row["cases"])
+
+    # 记录每个模型的预测
+    record = {"month": month_label, "actual": actual}
     for name, r in result.items():
         if "error" not in r:
-            print(f"  {name}预测={r['pred'][0]:.0f}", end="")
+            record[name] = r["pred"][0]
+    history.append(record)
+
+    print(f"  {month_label}: 实报={actual:5d}", end="")
+    for name, r in result.items():
+        if "error" not in r:
+            print(f"  {name}预测={r['pred'][0]:6.0f}", end="")
     print()
 
-# 最后一次 feed 后查看 data_table
-print(f"\ndata_table: {len(runtime.data_table)} 行")
-print(f"时间范围: {runtime.data_table['time'].iloc[0]} ~ {runtime.data_table['time'].iloc[-1]}")
+print(f"\n模拟完成: {len(df_deploy)} 个月, data_table={len(runtime.data_table)} 行")
+```
 
-# 保存运行时
+### 7.1 部署预测 vs 实际值对比图
+
+```python
+df_hist = pd.DataFrame(history)
+
+plt.figure(figsize=(14, 5))
+plt.plot(range(len(df_hist)), df_hist["actual"], "o-", color="black",
+         linewidth=2, label="实际值", markersize=6)
+
+colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
+for (name, r), color in zip(results.items(), colors):
+    if name in df_hist.columns:
+        plt.plot(range(len(df_hist)), df_hist[name], "s--", label=name,
+                 color=color, alpha=0.6, markersize=4)
+
+plt.xticks(range(len(df_hist)), df_hist["month"], rotation=45)
+plt.ylabel("病例数"); plt.xlabel("月份")
+plt.title("部署模拟：逐月预测 vs 实际值", fontsize=14, fontweight="bold")
+plt.legend(fontsize=10); plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.savefig("/tmp/dengue_deploy_sim.png", dpi=150)
+plt.show()
+```
+
+### 7.2 保存运行时
+
+```python
 runtime.save("/tmp/dengue_runtime/")
-print(f"运行时已保存到 /tmp/dengue_runtime/")
+print("运行时已保存到 /tmp/dengue_runtime/")
 
-# 显式更新 ETS 状态（确认数据质量后）
-runtime.update_model("ETS", np.array([1200, 800]))
-print("\nETS 状态已更新")
+# 保存 vault
+vault.save("/tmp/dengue_vault/")
+print("模型 vault 已保存到 /tmp/dengue_vault/")
 ```
 
 ---
 
-## 8. 未来预测图
+## 8. 未来预测
 
 ```python
-# 选择最佳模型绘制未来预测
 best_name = vault.best("R2")
 inferer = vault.get(best_name)
 
-last_time = pd.to_datetime(all_time[-1])
+last_time = pd.to_datetime(runtime.data_table["time"].iloc[-1])
 future_dates = pd.date_range(start=last_time + pd.DateOffset(months=1),
                               periods=3, freq="MS")
 
@@ -268,16 +292,27 @@ if inferer.paradigm == "ts":
     fc = inferer.forecast(3)
     future_pred = fc[:, 0, 0]
 else:
-    pred = inferer.predict(bundle.train_df.tail(15).copy()[bundle.feature_names])
+    pred = inferer.predict(
+        runtime.data_table.tail(bundle.lookback)[bundle.feature_names]
+    )
     future_pred = pred[0, :, 0]
 
+# 历史数据（训练 + 部署验证）
+all_history = df["time"].tolist()
+all_cases = df["cases"].values
+
 plt.figure(figsize=(14, 5))
-plt.plot(all_time, y_all, "-", label="历史实际值", color="#2c3e50", linewidth=1.5)
+plt.plot(all_history, all_cases, "-", label="历史实际值", color="#2c3e50", linewidth=1.5)
 plt.plot(future_dates, future_pred, "o--", color="#e74c3c",
          linewidth=2, markersize=6, label=f"预测 (3个月)")
+
+# 部署验证区域标注
+deploy_start = df_deploy["time"].iloc[0]
+plt.axvspan(deploy_start, all_history[-1], alpha=0.08, color="blue", label="部署验证期")
 plt.axvline(x=last_time, color="gray", linestyle=":", alpha=0.5)
 plt.text(last_time, plt.ylim()[1] * 0.95, "← 历史 | 预测 →",
          ha="center", fontsize=10, color="gray")
+
 plt.legend(fontsize=11)
 plt.title(f"{best_name} — 登革热未来 3 个月预测", fontsize=14, fontweight="bold")
 plt.ylabel("病例数"); plt.xlabel("时间"); plt.grid(alpha=0.3)
@@ -288,23 +323,21 @@ plt.show()
 
 ---
 
-## 9. 加载已保存的状态
+## 9. 恢复运行时继续预测
 
 ```python
-# 恢复整个运行时
 runtime2 = DeploymentRuntime.load("/tmp/dengue_runtime/")
 print(f"加载: {runtime2}")
-print(f"  vault: {runtime2.vault}")
-print(f"  data_table: {len(runtime2.data_table)} 行")
-print(f"  已 feed: {runtime2._feed_count} 次")
 
-# 继续 feed
-new_row = pd.DataFrame({"time": [(pd.Timestamp.now() + pd.DateOffset(months=1)).strftime("%Y-%m-%d")],
-                        "cases": [np.random.randint(500, 1500)]})
+# 继续 feed 新数据
+new_row = pd.DataFrame({
+    "time": [(last_time + pd.DateOffset(months=1)).strftime("%Y-%m-%d")],
+    "cases": [int(np.random.normal(1000, 300))],
+})
 result = runtime2.feed(new_row)
 for name, r in result.items():
     if "error" not in r:
-        print(f"  继续预测 — {name}: {r['pred'][:3].round(0).astype(int)}")
+        print(f"  继续 feed — {name}: 预测未来3月 = {r['pred'].round(0).astype(int)}")
 ```
 
 ---
@@ -318,7 +351,7 @@ print(f"  Sklearn: {list_models('sklearn')}")
 print(f"  TimeSeries: {list_models('ts')}")
 ```
 
-安装依赖：
+依赖安装：
 
 ```bash
 pip install -e .                                # 基础
