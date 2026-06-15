@@ -165,22 +165,18 @@ class InferencePipeline:
         # 1. Apply transforms (no re-fitting)
         df_t = self._apply_transforms(df)
 
-        # 2. Generate sliding windows
+        # 2. Generate sliding windows (no target values needed during inference)
         sw = SlidingWindow(lookback=self.lookback, horizon=self.horizon)
-        windows = sw.apply(
-            df_t,
-            target_cols=self.target_names,
-            feature_cols=self.feature_names,
-        )
+        x_windows = sw.apply_features_only(df_t, self.feature_names)
 
-        if len(windows.x) == 0:
+        if len(x_windows) == 0:
             raise ValueError(
                 f"Input has {len(df)} rows, but need at least "
-                f"{self.lookback + self.horizon} rows to make one window."
+                f"{self.lookback} rows to make one window."
             )
 
         # 3. Model prediction
-        raw_pred = self.model.predict(windows.x)
+        raw_pred = self.model.predict(x_windows)
         raw_pred = np.asarray(raw_pred, dtype=np.float32)
 
         # 4. Inverse transform predictions back to original scale

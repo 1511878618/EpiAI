@@ -80,18 +80,18 @@ class StandardScaler(Transform):
         cols = self._resolve_columns(df)
         df = df.copy()
         if self.with_mean:
-            df[cols] = df[cols] - self.mean_
+            df[cols] = df[cols] - self.mean_[cols].values
         if self.with_std:
-            df[cols] = df[cols] / (self.std_ + self.eps)
+            df[cols] = df[cols] / (self.std_[cols].values + self.eps)
         return df
 
     def inverse(self, df: pd.DataFrame) -> pd.DataFrame:
         cols = self._resolve_columns(df)
         df = df.copy()
         if self.with_std:
-            df[cols] = df[cols] * (self.std_ + self.eps)
+            df[cols] = df[cols] * (self.std_[cols].values + self.eps)
         if self.with_mean:
-            df[cols] = df[cols] + self.mean_
+            df[cols] = df[cols] + self.mean_[cols].values
         return df
 
     def _resolve_columns(self, df: pd.DataFrame) -> List[str]:
@@ -154,18 +154,18 @@ class RobustScaler(Transform):
         cols = self._resolve_columns(df)
         df = df.copy()
         if self.with_centering:
-            df[cols] = df[cols] - self.center_
+            df[cols] = df[cols] - self.center_[cols].values
         if self.with_scaling:
-            df[cols] = df[cols] / (self.scale_ + self.eps)
+            df[cols] = df[cols] / (self.scale_[cols].values + self.eps)
         return df
 
     def inverse(self, df: pd.DataFrame) -> pd.DataFrame:
         cols = self._resolve_columns(df)
         df = df.copy()
         if self.with_scaling:
-            df[cols] = df[cols] * (self.scale_ + self.eps)
+            df[cols] = df[cols] * (self.scale_[cols].values + self.eps)
         if self.with_centering:
-            df[cols] = df[cols] + self.center_
+            df[cols] = df[cols] + self.center_[cols].values
         return df
 
     def _resolve_columns(self, df: pd.DataFrame) -> List[str]:
@@ -577,6 +577,24 @@ class SlidingWindow:
             feature_names=feature_cols,
             target_names=target_cols,
         )
+
+    def apply_features_only(
+        self,
+        df: pd.DataFrame,
+        feature_cols: List[str],
+    ) -> np.ndarray:
+        """Generate feature windows only (for inference where targets are unknown).
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(N, lookback, n_features)``.
+        """
+        X = []
+        n = len(df)
+        for i in range(0, n - self.lookback + 1, self.stride):
+            X.append(df[feature_cols].iloc[i:i + self.lookback].values)
+        return np.array(X, dtype=np.float32)
 
 
 # ============================================================================
