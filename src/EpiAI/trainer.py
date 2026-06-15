@@ -254,8 +254,14 @@ class EpiAITrainer:
     # ── Internal helpers ────────────────────────────────────────────
 
     def _build_result(self, bundle, predictions) -> TrainResult:
-        n = predictions.shape[0]
-        y_true = bundle.get_y_series("test")[:n]
+        paradigm = self.model.paradigm()
+        if paradigm == "ts":
+            # TS models predict raw time series length
+            n = predictions.shape[0]
+            y_true = bundle.get_y_series("test")[:n]
+        else:
+            # Window models: ground truth is test_y (same windowing)
+            y_true = bundle.test_y[:, 0, :]  # first horizon step only
 
         # Inverse-transform using shared helper
         predictions = inverse_predictions(
@@ -354,7 +360,7 @@ def inverse_predictions(
         for i, tn in enumerate(target_names):
             col_pred = f"{tn}_pred"
             inv_df = pd.DataFrame(
-                np.column_stack([predictions[:, -1, i]] * 2),
+                np.column_stack([predictions[:, 0, i]] * 2),
                 columns=[tn, col_pred],
             )
             inv_df = transforms.inverse(inv_df)
@@ -374,12 +380,13 @@ def inverse_predictions(
 
 
 def _compute_metrics(y_true, y_pred, target_names) -> pd.DataFrame:
-    # y_true: (N, target_dim) or (N,)
-    # y_pred: (N, horizon, target_dim) or (N, horizon)
+    # y_true: (N, target_dim) for window models, (N,) for TS models
+    # y_pred: (N, horizon, target_dim) or (N, 1, target_dim)
     rows = []
     for i, tgt in enumerate(target_names):
+        # Use only the first horizon step (index 0)
         if y_pred.ndim == 3:
-            yp = y_pred[:, :, i].ravel()  # (N * horizon,)
+            yp = y_pred[:, 0, i]
         else:
             yp = y_pred.ravel()
 
@@ -387,10 +394,6 @@ def _compute_metrics(y_true, y_pred, target_names) -> pd.DataFrame:
             yt = y_true[:, i]
         else:
             yt = y_true
-
-        # Repeat y_true to match horizon-expanded y_pred
-        if len(yp) > len(yt) and len(yp) % len(yt) == 0:
-            yt = np.tile(yt, len(yp) // len(yt))
 
         # Truncate to same length
         min_len = min(len(yp), len(yt))
