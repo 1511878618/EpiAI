@@ -289,7 +289,7 @@ plt.show()
 
 ```python
 runtime.save("/tmp/dengue_runtime/")
-print("运行时已保存到 /tmp/dengue_runtime/")
+print("\n运行时已保存到 /tmp/dengue_runtime/")
 
 # 保存 vault
 vault.save("/tmp/dengue_vault/")
@@ -298,71 +298,7 @@ print("模型 vault 已保存到 /tmp/dengue_vault/")
 
 ---
 
-## 8. 未来预测
-
-```python
-best_name = vault.best("R2")
-inferer = vault.get(best_name)
-
-last_time = pd.to_datetime(runtime.data_table["time"].iloc[-1])
-future_dates = pd.date_range(start=last_time + pd.DateOffset(months=1),
-                              periods=3, freq="MS")
-
-if inferer.paradigm == "ts":
-    fc = inferer.forecast(3)
-    future_pred = fc[:, 0, 0]
-else:
-    pred = inferer.predict(
-        runtime.data_table.tail(bundle.lookback)[bundle.feature_names]
-    )
-    future_pred = pred[0, :, 0]
-
-# 历史数据（训练 + 部署验证）
-all_history = df["time"].tolist()
-all_cases = df["cases"].values
-
-plt.figure(figsize=(14, 5))
-plt.plot(all_history, all_cases, "-", label="历史实际值", color="#2c3e50", linewidth=1.5)
-plt.plot(future_dates, future_pred, "o--", color="#e74c3c",
-         linewidth=2, markersize=6, label=f"预测 (3个月)")
-
-# 部署验证区域标注
-deploy_start = df_deploy["time"].iloc[0]
-plt.axvspan(deploy_start, all_history[-1], alpha=0.08, color="blue", label="部署验证期")
-plt.axvline(x=last_time, color="gray", linestyle=":", alpha=0.5)
-plt.text(last_time, plt.ylim()[1] * 0.95, "← 历史 | 预测 →",
-         ha="center", fontsize=10, color="gray")
-
-plt.legend(fontsize=11)
-plt.title(f"{best_name} — 登革热未来 3 个月预测", fontsize=14, fontweight="bold")
-plt.ylabel("病例数"); plt.xlabel("时间"); plt.grid(alpha=0.3)
-plt.xticks(rotation=45); plt.tight_layout()
-plt.savefig("/tmp/dengue_forecast.png", dpi=150)
-plt.show()
-```
-
----
-
-## 9. 恢复运行时继续预测
-
-```python
-runtime2 = DeploymentRuntime.load("/tmp/dengue_runtime/")
-print(f"加载: {runtime2}")
-
-# 继续 feed 新数据
-new_row = pd.DataFrame({
-    "time": [(last_time + pd.DateOffset(months=1)).strftime("%Y-%m-%d")],
-    "cases": [int(np.random.normal(1000, 300))],
-})
-result = runtime2.feed(new_row)
-for name, r in result.items():
-    if "error" not in r:
-        print(f"  继续 feed — {name}: 预测未来3月 = {r['pred'].round(0).astype(int)}")
-```
-
----
-
-## 10. 附录
+## 8. 附录
 
 ```python
 print("可用模型:")
