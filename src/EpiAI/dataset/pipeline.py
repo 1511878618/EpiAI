@@ -248,30 +248,39 @@ class ForecastPipeline:
             feature_cols=resolved_feature_cols,
             entity_col=data.entity_col,
         )
-        val_w = (
-            self.window.apply(
-                val_df, target_cols=data.target_cols,
+
+        # Val/test windows: prepend lookback context from previous split(s).
+        # This ensures the first window of each split has enough history
+        # to form a valid input, without losing rows at boundaries.
+        lookback = self.window.lookback
+
+        if val_df is not None:
+            _val_ctx = train_df.iloc[-lookback:] if len(train_df) >= lookback else train_df
+            val_w = self.window.apply(
+                pd.concat([_val_ctx, val_df]),
+                target_cols=data.target_cols,
                 feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
-            if val_df is not None
-            else WindowArrays(
+        else:
+            val_w = WindowArrays(
                 x=np.empty((0, train_w.x.shape[1], train_w.x.shape[2])),
                 y=np.empty((0, train_w.y.shape[1], train_w.y.shape[2])),
                 feature_names=train_w.feature_names,
                 target_names=train_w.target_names,
             )
-        )
 
-        test_w = (
-            self.window.apply(
-                test_df, target_cols=data.target_cols,
+        if test_df is not None:
+            _prev_for_test = train_df if val_df is None else pd.concat([train_df, val_df])
+            _test_ctx = _prev_for_test.iloc[-lookback:] if len(_prev_for_test) >= lookback else _prev_for_test
+            test_w = self.window.apply(
+                pd.concat([_test_ctx, test_df]),
+                target_cols=data.target_cols,
                 feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
-            if test_df is not None
-            else None
-        )
+        else:
+            test_w = None
 
         return PipelineBundle(
             data=data,
