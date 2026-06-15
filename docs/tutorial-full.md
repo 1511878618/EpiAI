@@ -216,30 +216,41 @@ print(f"窗口模型需要: {bundle.lookback} 行历史 ✅ data_table 已满足
 
 # ── 逐月 feed 留出的真实数据 ──
 history = []
+prev_preds = {}  # 上一轮 feed 对本月（即当前 feed 月份）的预测
 
 for i in range(len(df_deploy)):
     row = df_deploy.iloc[i]
+    month_label = row["time"].strftime("%Y-%m")
+    actual = int(row["cases"])
+
+    # 记录：本月实际值 vs 上一轮 feed 对本月的预测
+    record = {"month": month_label, "actual": actual}
+    if i > 0:
+        for name in prev_preds:
+            record[name] = prev_preds[name]
+    else:
+        for name in results:
+            record[name] = None  # 首次 feed 无上一期预测
+    history.append(record)
+
+    # 打印
+    print(f"  {month_label}: 实报={actual:5d}", end="")
+    if i > 0:
+        for name in prev_preds:
+            print(f"  {name}预测={prev_preds[name]:6.0f}", end="")
+    else:
+        print(f"  (首次 feed, 无上期对比)", end="")
+    print()
+
+    # feed 本月数据，产出下月预测
     new_data = pd.DataFrame({
         "time": [row["time"].strftime("%Y-%m-%d")],
         "cases": [row["cases"]],
     })
-
     result = runtime.feed(new_data)
-
-    month_label = row["time"].strftime("%Y-%m")
-    actual = int(row["cases"])
-
-    record = {"month": month_label, "actual": actual}
     for name, r in result.items():
         if "error" not in r:
-            record[name] = r["pred"][0]
-    history.append(record)
-
-    print(f"  {month_label}: 实报={actual:5d}", end="")
-    for name, r in result.items():
-        if "error" not in r:
-            print(f"  {name}预测={r['pred'][0]:6.0f}", end="")
-    print()
+            prev_preds[name] = r["pred"][0]  # 预测的下个月的值
 
 print(f"\n模拟完成: {len(df_deploy)} 个月, data_table={len(runtime.data_table)} 行")
 ```
@@ -256,7 +267,8 @@ plt.plot(range(len(df_hist)), df_hist["actual"], "o-", color="black",
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for (name, r), color in zip(results.items(), colors):
     if name in df_hist.columns:
-        plt.plot(range(len(df_hist)), df_hist[name], "s--", label=name,
+        valid = df_hist[name].dropna()
+        plt.plot(valid.index, valid, "s--", label=name,
                  color=color, alpha=0.6, markersize=4)
 
 plt.xticks(range(len(df_hist)), df_hist["month"], rotation=45)
