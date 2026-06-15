@@ -396,12 +396,18 @@ class DateFeatures(Transform):
 class FeatureLag(Transform):
     """Add lagged values as new columns.
 
+    For multi-entity data, pass ``entity_col`` so lagging is computed
+    per entity independently (otherwise lags would leak across entity
+    boundaries).
+
     Parameters
     ----------
     columns : list of str
         Columns to lag.
     lags : list of int
         Lag values (e.g. ``[1, 3, 6]`` for t-1, t-3, t-6).
+    entity_col : str or None, optional
+        When set, lags are computed per entity group.
     drop_na : bool, optional
         Drop rows with NaN introduced by lagging (default ``True``).
     suffix : str, optional
@@ -412,22 +418,37 @@ class FeatureLag(Transform):
         self,
         columns: List[str],
         lags: List[int],
+        entity_col: Optional[str] = None,
         drop_na: bool = True,
         suffix: str = "_lag",
     ) -> None:
         self.columns = columns
         self.lags = sorted(lags)
+        self.entity_col = entity_col
         self.drop_na = drop_na
         self.suffix = suffix
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        for col in self.columns:
-            for lag in self.lags:
-                df[f"{col}{self.suffix}_{lag}"] = df[col].shift(lag)
+        if self.entity_col is not None and self.entity_col in df.columns:
+            parts = []
+            for _, group in df.groupby(self.entity_col):
+                parts.append(self._add_lags(group))
+            df = pd.concat(parts, ignore_index=True)
+        else:
+            df = self._add_lags(df)
         if self.drop_na:
             df = df.dropna()
         return df
+
+    def _add_lags(self, group: pd.DataFrame) -> pd.DataFrame:
+        group = group.copy()
+        for col in self.columns:
+            if col not in group.columns:
+                continue
+            for lag in self.lags:
+                group[f"{col}{self.suffix}_{lag}"] = group[col].shift(lag)
+        return group
 
 
 # ============================================================================
