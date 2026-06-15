@@ -1,58 +1,72 @@
-# EpiAI 训练架构设计（v3 定稿）
+# EpiAI 训练架构设计（v4 定稿）
 
 ---
 
-## 1. 三大模型族
+## 1. 整体分层
 
 ```
-Torch 族        → nn.Module，梯度下降训练，GPU
-Sklearn 族      → sklearn 兼容，一次 fit，CPU  
-TimeSeries 族   → 统计/传统时序，rolling origin 评价
+┌──────────────────────────────────────────────────────────────┐
+│                         用户代码                              │
+│  get("LSTM")(...).fit(bundle)  /  vault.best("R2")           │
+│  runtime.feed(new_data)                                      │
+├──────────────────────────────────────────────────────────────┤
+│                     InferenceLayer                            │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │  DeploymentRuntime  (生产部署)                          │    │
+│  │  ┌─ data_table (持久化)                                │    │
+│  │  ├─ feed() → 时间检查 → 追加 → 各模型推理 → 持久化      │    │
+│  │  └─ update_model() / update_all_ts()                    │    │
+│  ├──────────────────────────────────────────────────────┤    │
+│  │  ModelVault  (多模型管理)                               │    │
+│  │  ├─ best() / summary() / predict_all()                 │    │
+│  │  └─ save() / load() → zip 包                          │    │
+│  ├──────────────────────────────────────────────────────┤    │
+│  │  InferencePipeline  (单模型推理)                        │    │
+│  │  ├─ predict(df) → 变换 → 窗口 → 预测 → 反标准化       │    │
+│  │  ├─ forecast(steps) / update(y)                       │    │
+│  │  └─ save() / load()                                   │    │
+│  └──────────────────────────────────────────────────────┘    │
+├──────────────────────────────────────────────────────────────┤
+│                     EpiAITrainer                              │
+│                                                              │
+│  paradigm == "torch"    → epoch 循环 + AdamW + EarlyStopping │
+│  paradigm == "sklearn"  → model.fit(train_x, train_y, ...)   │
+│  paradigm == "ts"       → fit_sequence(y) + predict_sequence │
+│                                                              │
+│  结果 → inverse_predictions() → _compute_metrics()          │
+│       → TrainResult                                          │
+├──────────────────────────────────────────────────────────────┤
+│                     PipelineBundle                            │
+│  train/val/test_x/y (3D 窗口) + train/val/test_df (原始序)   │
+│  get_y_series() / get_X_series()                             │
+│  val/test 窗口已带 lookback+horizon-1 行上下文，无数据丢失   │
+├──────────────────────────────────────────────────────────────┤
+│                     ForecastPipeline                          │
+│  Load → Split → Transform → Window                           │
+└──────────────────────────────────────────────────────────────┘
 ```
-
-命名统一：
-
-| 族 | Paradigm | 基类 Mixin | 示例 |
-|-----|----------|-----------|------|
-| Torch | `"torch"` | `TorchMixin` | CNN, LSTM, Transformer, TimesNet |
-| Sklearn | `"sklearn"` | `SklearnMixin` | XGB, LGBM, RandomForest, SVR, LinearReg, TabPFN |
-| TimeSeries | `"ts"` | `TSMixin` | ARIMA, ETS |
 
 ---
 
-## 2. 整体分层
+## 2. 三大模型族
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                   用户代码                                │
-│  ForecasterRegistry.get("LSTM")(...)                     │
-│  trainer.fit(model, bundle)                              │
-├─────────────────────────────────────────────────────────┤
-│                    EpiAITrainer                          │
-│                                                         │
-│  paradigm == "torch" → TorchTrainer                      │
-│     epoch 循环, GPU, ADAMW, EarlyStopping, LR scheduler  │
-│                                                         │
-│  paradigm == "sklearn" → model.fit(train_x, train_y,     │
-│     val_x, val_y)                                        │
-│                                                         │
-│  paradigm == "ts" → model.fit_sequence(y_train, X_train) │
-│     model.predict_sequence(y_test, X_test)               │
-│                                                         │
-| 结果 → 反标准化 + 统一指标 → TrainResult                 |
-├─────────────────────────────────────────────────────────┤
-│                    PipelineBundle                        │
-│  train_x/y (3D 窗) + train_df (变换后原始序列)            │
-│  get_y_series() / get_X_series()                        │
-├─────────────────────────────────────────────────────────┤
-│                    ForecastPipeline                      │
-│  Load → Split → Transform → Window                      │
-└─────────────────────────────────────────────────────────┘
+| 族 | Paradigm | 训练方式 | 基类 | 示例模型 |
+|----|----------|---------|------|---------|
+| Torch | `"torch"` | 梯度下降，GPU | `TorchMixin` | MLP, LSTM, CNN, ResNet, TCN, Transformer, DLinear, Autoformer, TimesNet |
+| Sklearn | `"sklearn"` | 一次 fit | `SklearnMixin` | RF, XGB, LGBM, SVR, GLM, TabPFN |
+| TimeSeries | `"ts"` | 统计推断 | `TSMixin` | ARIMA, ETS |
 
-**关键实现细节：**
-- TS 族如果模型不支持外生变量（如 ETS），Trainer 自动降级为单变量
-- SklearnMixin 提供 `_flatten_x()` / `_prepare_y()` / `_reshape_pred()` 辅助
-- Torch 模型缺少 torch 时可用 MockModule 占位，注册不受影响
+三种模型训练接口统一：
+
+```python
+# Torch — 走完整训练循环
+EpiAITrainer(model=get("LSTM")(...), loss=OutbreakAwareLoss(...)).fit(bundle)
+
+# Sklearn — optimizer/loss 自动忽略
+EpiAITrainer(model=get("XGB")(...)).fit(bundle)
+
+# TS — 自动走 fit_sequence + rolling origin
+EpiAITrainer(model=get("ETS")(seasonal_periods=12)).fit(bundle)
 ```
 
 ---
@@ -61,129 +75,32 @@ TimeSeries 族   → 统计/传统时序，rolling origin 评价
 
 ```python
 class BaseForecaster(ABC):
-    """所有预报模型的统一接口。"""
-
     @classmethod
     @abstractmethod
-    def paradigm(cls) -> Literal["torch", "sklearn", "ts"]:
-        ...
+    def paradigm(cls) -> Literal["torch", "sklearn", "ts"]: ...
 
-    # ── Torch / Sklearn 共用（窗口数据）────
-    def fit(self, train_x, train_y, val_x=None, val_y=None):
-        raise NotImplementedError
+    # ── 窗口模型（Torch / Sklearn）────
+    def fit(self, train_x, train_y, val_x=None, val_y=None): ...
+    def predict(self, x) -> np.ndarray: ...   # (N, horizon, target_dim)
 
-    def predict(self, x) -> np.ndarray:
-        """返回 (N, horizon, target_dim)"""
-        raise NotImplementedError
-
-    # ── TimeSeries 专用（原始序列）────────
-    def fit_sequence(self, y_train, X_train=None):
-        raise NotImplementedError
-
-    def predict_sequence(self, y_test, X_test=None,
-                         update_state=True) -> np.ndarray:
-        raise NotImplementedError
-
-    def forecast(self, n_periods, X_future=None) -> np.ndarray:
-        raise NotImplementedError
-
-    # ── 通用 ──────────────────────────────
-    def save(self, path): ...
-    @classmethod
-    def load(cls, path): ...
+    # ── 时序模型（TS）───────────────
+    def fit_sequence(self, y_train, X_train=None): ...
+    def predict_sequence(self, y_test, X_test=None, update_state=True): ...
+    def forecast(self, n_periods, X_future=None) -> np.ndarray: ...
 ```
 
-### Mixin 定义
+**TorchMixin**：提供默认 `predict()` → `forward()` + `no_grad()` + 自动设备匹配（`.to(device)`）。
 
-```python
-class TorchMixin(BaseForecaster):
-    """PyTorch 神经网络基类。扩展 nn.Module 使用。"""
-    @classmethod
-    def paradigm(cls) -> str:
-        return "torch"
+**SklearnMixin**：提供 `_flatten_x()` / `_prepare_y()` / `_reshape_pred()` 辅助方法。
 
-class SklearnMixin(BaseForecaster):
-    """sklearn-like 模型。fit(x,y)/predict(x)。"""
-    @classmethod
-    def paradigm(cls) -> str:
-        return "sklearn"
-    # 提供 _flatten_x / _prepare_y / _reshape_pred 辅助
-
-class TSMixin(BaseForecaster):
-    """传统时序模型。fit_sequence(y)/predict_sequence(y)。"""
-    @classmethod
-    def paradigm(cls) -> str:
-        return "ts"
-```
+**TSMixin**：提供 ABC，子类必须实现 `fit_sequence` / `predict_sequence` / `forecast`。
 
 ---
 
-## 4. 三类模型的具体形态
+## 4. 注册系统
 
 ```python
-# ── Torch ─────────────────────────────────────────────────
-@register("LSTM", "lstm")
-class LSTMForecaster(nn.Module, TorchMixin):
-    def __init__(self, input_dim, lookback, horizon, target_dim, ...):
-        super().__init__()
-        ...
-
-    def forward(self, x: Tensor) -> Tensor:
-        return ...  # (B, H, T)
-
-    # fit() 不实现，由 EpiAITrainer 的 TorchTrainer 接管
-    def predict(self, x):
-        self.eval()
-        with torch.no_grad():
-            return self.forward(torch.tensor(x)).numpy()
-
-
-# ── Sklearn ───────────────────────────────────────────────
-@register("XGB", "XGBoost")
-class XGBSingleForecaster(SklearnMixin):
-    def __init__(self, input_dim, lookback, horizon, target_dim, ...):
-        ...
-
-    def fit(self, train_x, train_y, val_x=None, val_y=None):
-        x_flat = self._flatten_x(train_x)
-        y_prep = self._prepare_y(train_y)
-        if val_x is not None and hasattr(self.model_, 'set_params'):
-            self.model_.set_params(eval_set=[(_flatten_x(val_x), _prepare_y(val_y))])
-        self.model_.fit(x_flat, y_prep)
-
-    def predict(self, x):
-        return self._reshape_pred(self.model_.predict(self._flatten_x(x)))
-
-
-# ── TimeSeries ────────────────────────────────────────────
-@register("ARIMA", "auto_arima")
-class AutoARIMAXRollingForecaster(TSMixin):
-    def __init__(self, seasonal=True, m=12, ...):
-        ...
-
-    def fit_sequence(self, y_train, X_train=None):
-        # y_train: (T,) — 原始 1D 时序
-        self.model_ = auto_arima(y_train, X=X_train, ...)
-
-    def predict_sequence(self, y_test, X_test=None, update_state=True):
-        # Rolling origin: 逐点预测 → 更新状态
-        preds = []
-        for t in range(len(y_test)):
-            pred = self.model_.predict(n_periods=1,
-                                       X=X_test[t:t+1] if X_test is not None else None)
-            preds.append(pred[0])
-            if update_state:
-                self.model_.update(y_test[t])
-        return np.array(preds).reshape(-1, 1, 1)
-```
-
----
-
-## 5. 注册系统
-
-```python
-# src/EpiAI/models/registry.py
-
+# registry.py
 _registry: dict[str, type[BaseForecaster]] = {}
 
 def register(*names: str):
@@ -194,10 +111,7 @@ def register(*names: str):
     return wrapper
 
 def get(name: str) -> type[BaseForecaster]:
-    cls = _registry.get(name.lower())
-    if cls is None:
-        raise KeyError(f"Unknown: {name}. Available: {list(_registry.keys())}")
-    return cls
+    return _registry[name.lower()]
 
 def list_models(paradigm=None) -> list[str]:
     if paradigm is None:
@@ -207,252 +121,237 @@ def list_models(paradigm=None) -> list[str]:
 
 ---
 
-## 6. PipelineBundle 变更
+## 5. EpiAITrainer — 统一训练入口
+
+### 路由逻辑
 
 ```python
-@dataclass
-class PipelineBundle:
-    # ...现有字段不变...
-    train_df: Optional[pd.DataFrame] = None  # 新增
-    val_df:   Optional[pd.DataFrame] = None  # 新增
-    test_df:  Optional[pd.DataFrame] = None  # 新增
-
-    def get_y_series(self, split="train") -> np.ndarray:
-        """返回 (T, target_dim)。给 TS 族用。"""
-        df = getattr(self, f"{split}_df")
-        return df[self.target_names].values.astype(np.float32)
-
-    def get_X_series(self, split="train") -> np.ndarray:
-        """返回 (T, n_features)。"""
-        df = getattr(self, f"{split}_df")
-        return df[self.feature_names].values.astype(np.float32)
+def fit(self, bundle) -> TrainResult:
+    p = self.model.paradigm()
+    if p == "torch":    return self._fit_torch(bundle)
+    elif p == "sklearn": return self._fit_sklearn(bundle)
+    elif p == "ts":     return self._fit_ts(bundle)
 ```
 
-`ForecastPipeline.run()` 新增三行：
+### Torch 路径
+
+- 设备自检（cuda / mps / cpu）
+- 损失函数默认 `nn.MSELoss()`，可自定义
+- AdamW 参数过滤：只传 `lr / weight_decay / betas / eps / amsgrad`，防止 `max_epochs` / `batch_size` 误传
+- EarlyStopping 支持
+- epoch 循环 + 验证
+
+### Sklearn 路径
+
+- 调用 `model.fit(train_x, train_y, val_x, val_y)`
+- 各模型自行处理 val 参数（RF/XGB 用于 early stopping，SVR/GLM 忽略）
+
+### TS 路径
+
+- 剥离 X 中与 target 重叠的列（防止 ARIMA 看到未来真值作为外生变量）
+- 调用 `fit_sequence(y, X)` → `predict_sequence(y, X)`
+- 如果模型不支持外生变量（如 ETS），自动降级为单变量
+
+### 结果组装
 
 ```python
-return PipelineBundle(..., train_df=train_df, val_df=val_df, test_df=test_df)
+def _build_result(self, bundle, predictions) -> TrainResult:
+    paradigm = self.model.paradigm()
+    if paradigm == "ts":
+        n = predictions.shape[0]
+        y_true = bundle.get_y_series("test")[:n]
+    else:
+        y_true = bundle.test_y[:, 0, :]   # 窗口目标，只取首步
+
+    predictions = inverse_predictions(
+        predictions, bundle.target_names, bundle.transforms, y_true=y_true,
+    )
+    metrics = _compute_metrics(y_true, predictions, bundle.target_names)
+    return TrainResult(model, predictions, metrics, history)
 ```
 
----
-
-## 7. EpiAITrainer — 统一训练入口
+### 共享模块级函数
 
 ```python
-class EpiAITrainer:
-    """统一训练器。根据 paradigm 自动路由。
-    
-    参数
-    ----
-    model : BaseForecaster
-        已实例化的模型。
-    loss : nn.Module or None
-        Torch 族的损失函数。Sklearn / TS 自动忽略。
-    optimizer_config : dict or None
-        Torch 族的优化器参数。其余忽略。
-    early_stopping_config : dict or None
-        Torch 族的早停参数。其余忽略。
-    device : str
-        Torch 族的设备。
-    verbose : bool
-    """
+def inverse_predictions(predictions, target_names, transforms, y_true=None):
+    """逐列逆运算，只操作 predictions[:, 0, :]（首步）。"""
 
-    def __init__(self, model: BaseForecaster,
-                 loss=None,
-                 optimizer_config=None,
-                 early_stopping_config=None,
-                 device="auto",
-                 verbose=True):
-        self.model = model
-        self.loss = loss
-        self.optimizer_config = optimizer_config or {}
-        self.early_stopping_config = early_stopping_config or {}
-        self.device = device
-        self.verbose = verbose
-
-    def fit(self, bundle: PipelineBundle) -> TrainResult:
-        p = self.model.paradigm()
-
-        if p == "torch":
-            return self._fit_torch(bundle)
-        elif p == "sklearn":
-            return self._fit_sklearn(bundle)
-        elif p == "ts":
-            return self._fit_ts(bundle)
-        else:
-            raise ValueError(f"Unknown paradigm: {p}")
-
-    # ── Torch ──────────────────────────────────────────────
-    def _fit_torch(self, bundle):
-        device = ...  # 自检 cuda / mps / cpu
-        model = self.model.to(device)
-        loss_fn = self.loss or nn.MSELoss()
-        optimizer = AdamW(model.parameters(), **self.optimizer_config)
-        early_stopper = EarlyStopping(**self.early_stopping_config)
-
-        train_loader = DataLoader(TensorDataset(bundle.train_x, bundle.train_y),
-                                  batch_size=32, shuffle=True)
-        val_loader = DataLoader(TensorDataset(bundle.val_x, bundle.val_y),
-                                batch_size=32)
-
-        for epoch in range(max_epochs):
-            train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
-            val_loss = validate_one_epoch(model, val_loader, loss_fn, device)
-            early_stopper.step(val_loss, model)
-            if early_stopper.should_stop:
-                break
-
-        preds = self.model.predict(bundle.test_x)
-        return self._build_result(bundle, preds)
-
-    # ── Sklearn ────────────────────────────────────────────
-    def _fit_sklearn(self, bundle):
-        self.model.fit(
-            bundle.train_x, bundle.train_y,
-            val_x=bundle.val_x, val_y=bundle.val_y,
-        )
-        preds = self.model.predict(bundle.test_x)
-        return self._build_result(bundle, preds)
-
-    # ── TimeSeries ─────────────────────────────────────────
-    def _fit_ts(self, bundle):
-        y_train = bundle.get_y_series("train").squeeze()
-        y_test = bundle.get_y_series("test").squeeze()
-
-        # Try with X features first, fall back to univariate
-        try:
-            X_train = bundle.get_X_series("train") if bundle.feature_names else None
-            X_test = bundle.get_X_series("test") if bundle.feature_names else None
-            self.model.fit_sequence(y_train, X_train)
-            preds = self.model.predict_sequence(y_test, X_test, update_state=True)
-        except (ValueError, TypeError) as e:
-            if "X" in str(e) or "exogenous" in str(e):
-                self.model.fit_sequence(y_train, None)
-                preds = self.model.predict_sequence(y_test, None, update_state=True)
-            else:
-                raise
-        return self._build_result(bundle, preds)
-
-    # ── 统一结果 ───────────────────────────────────────────
-    def _build_result(self, bundle, predictions) -> TrainResult:
-        if bundle.transforms is not None:
-            predictions = self._inverse_target(predictions, bundle)
-        y_true = bundle.get_y_series("test")
-        metrics = _compute_metrics(y_true, predictions, bundle.target_names)
-        return TrainResult(model=self.model, predictions=predictions,
-                           metrics=metrics, history=getattr(self, "_history", None))
+def _compute_metrics(y_true, y_pred, target_names) -> pd.DataFrame:
+    """只比 y_pred[:, 0, :]（首步）。指标：MAE / RMSE / MAPE / R² / PearsonR。"""
 ```
 
 ---
 
-## 8. TrainResult
+## 6. 窗口上下文 — 数据丢失修复
+
+val/test 窗口创建时，自动拼接前一个 split 的尾部 `lookback + horizon - 1` 行作为上下文：
+
+```
+上下文 14 行 + test 30 行 = 44 行
+窗口: 44 - 12 - 3 + 1 = 30 个
+首步覆盖: test[0..29] = 全部 30 个测试点 ✅
+```
+
+之前只取 `lookback` 行上下文，导致首步只能覆盖 `test[0..27]`，最后 `horizon-1` 行丢失。
+
+---
+
+## 7. TrainResult
 
 ```python
 @dataclass
 class TrainResult:
-    model: BaseForecaster        # 训练后的模型
+    model: BaseForecaster
     predictions: np.ndarray      # (N, horizon, target_dim) 已反标准化
-    metrics: pd.DataFrame        # MAE/RMSE/MAPE/R²/PearsonR per target per split
+    metrics: pd.DataFrame        # MAE / RMSE / MAPE / R² / PearsonR
     history: Optional[dict]      # torch 的训练曲线
 ```
 
 ---
 
-## 9. 用户使用示例（三种模型完全相同）
+## 8. InferencePipeline — 单模型推理
 
 ```python
-bundle = ForecastPipeline.quick(
-    path="china_climate.csv",
-    time_col="Year/Month", target_cols="登革热",
-    feature_cols=["t2m_mean", "tcc_mean", "乙脑"],
-    entity_col="province",
-    lookback=12, horizon=3,
-)
+inferer = InferencePipeline.from_train_result(result)
 
-# ── Torch ──
-model = ForecasterRegistry.get("LSTM")(
-    input_dim=bundle.n_features, lookback=12, horizon=3, target_dim=1)
-result = EpiAITrainer(
-    model=model,
-    loss=OutbreakAwareLoss(threshold=100),
-    optimizer_config={"lr": 1e-3},
-    early_stopping_config={"patience": 10},
-).fit(bundle)
+# 窗口模型：输入 DataFrame → 变换 → 窗口 → 预测 → 反标准化
+pred = inferer.predict(new_data_df)
 
-# ── Sklearn ──
-model = ForecasterRegistry.get("XGB")(
-    input_dim=bundle.n_features, lookback=12, horizon=3, target_dim=1)
-result = EpiAITrainer(model=model).fit(bundle)
-#         ↑ loss, optimizer, early_stopping 自动忽略
+# TS 模型：纯未来预测 / 在线更新
+forecast = inferer.forecast(steps=6)
+updated = inferer.update(new_observations)
 
-# ── TimeSeries ──
-model = ForecasterRegistry.get("ARIMA")(seasonal=True, m=12)
-result = EpiAITrainer(model=model).fit(bundle)
-
-# 结果格式完全一样
-print(result.metrics)
-print(result.predictions.shape)  # (N_test, 3, 1)
+# 持久化
+inferer.save("model.zip")
+inferer = InferencePipeline.load("model.zip")
 ```
 
 ---
 
-## 10. 文件结构
+## 9. ModelVault — 多模型管理
+
+```python
+vault = ModelVault.from_results({"RF": r_rf, "XGB": r_xgb}, bundle)
+vault.save("/tmp/vault/")
+vault.summary()                     # 对比表（按 R² 降序）
+vault.best("R2")                    # 选最优
+vault.predict_all(new_data)         # 批量推理
+vault["RF"]                         # 获取单模型 InferencePipeline
+vault = ModelVault.load("/tmp/vault/")
+```
+
+目录结构：
+
+```
+/tmp/vault/
+├── manifest.json           # 全部模型及指标
+├── RF/
+│   ├── model.zip           # InferencePipeline 包
+│   └── meta.json           # 训练参数
+└── ETS/
+    ├── model.zip
+    └── meta.json
+```
+
+---
+
+## 10. DeploymentRuntime — 生产部署
+
+### 核心概念
+
+- **统一 data_table**：持久化 DataFrame（parquet/CSV），包含全部历史数据
+- **feed()**：追加新数据 → 时间连续性检查 → 各模型按需取数据推理 → 自动持久化
+- **TS 模型不自动 update**：显式调用 `update_model()` 更新状态
+
+### feed 流程
+
+```python
+def feed(self, new_data):
+    _check_time_continuity(new_data)
+    self.data_table.concat(new_data)
+
+    for name, inferer in self.vault.models.items():
+        if inferer.paradigm == "ts":
+            # 滑动预测：forecast(horizon + feed_count)[-horizon:]
+            n = horizon + max(0, feed_count - 1)
+            raw = inferer.forecast(n)[-horizon:]
+        else:
+            # 窗口模型：取 data_table.tail(lookback) → predict
+            x = self.data_table.tail(lookback)[feature_cols]
+            raw = inferer.predict(x)
+
+    self._persist()
+```
+
+### 时间连续性检查
+
+| 场景 | 行为 |
+|------|------|
+| 新数据紧接表中最后一条 | ✅ 正常追加 |
+| 存在时间缺口 | ❌ `TimeGapError` |
+| 新数据 ≤ 表中最后时间 | ❌ `TimeOrderError` |
+| 首次 feed 不接训练结束时间 | ❌ `TimeGapError` |
+| strict=False | ⚠️ 仅警告 |
+
+### TS 状态管理
+
+```python
+# 显式更新（需确认数据质量）
+runtime.update_model("ETS", np.array([1200, 800]))
+
+# 批量更新（预留接口，未来可扩展为自动重训）
+runtime.update_all_ts(new_df)
+```
+
+---
+
+## 11. 数据契约一致性（已修复的 Bug）
+
+| 问题 | 修复 | 涉及函数 |
+|------|------|---------|
+| 列的 alignment | `self.mean_[cols].values` 过滤 | StandardScaler.transform/inverse, RobustScaler |
+| 窗口 y_true 不对齐 | 窗口用 `test_y[:,0,:]`，TS 用 `get_y_series` | `_build_result` |
+| horizon 混比 | 只用 `y_pred[:, 0, i]`（首步） | `_compute_metrics`, `inverse_predictions` |
+| 测试集未覆盖尾行 | 上下文 = `lookback + horizon - 1` | pipeline.run() 窗口逻辑 |
+| 推理时缺少目标列 | `SlidingWindow.apply_features_only()` | InferencePipeline.predict() |
+| ARIMA 外生变量泄漏 | 剥离 X 中与 target 重叠的列 | `_fit_ts` |
+| AdamW kwargs | 只传 lr/weight_decay 等有效参数 | `_fit_torch` |
+| Torch device 不匹配 | `x_t.to(next(self.parameters()).device)` | TorchMixin.predict() |
+
+---
+
+## 12. 文件结构
 
 ```
 src/EpiAI/
-├── dataset/           ✅ 已完成
-│   ├── pipeline.py    → PipelineBundle + get_y_series()
-│   ├── base.py        → Transform / Compose / SplitStrategy ABC
-│   ├── container.py   → TimeSeriesData / SplitResult / WindowBundle
-│   ├── loaders.py     → CsvLoader / FeatherLoader / TensorLoader
-│   ├── splits.py      → 6种拆分策略
-│   ├── transforms.py  → 8种变换 + SlidingWindow
-│   └── ...
+├── dataset/
+│   ├── base.py        ← Transform / SplitStrategy / Compose ABC
+│   ├── container.py   ← TimeSeriesData / SplitResult / WindowBundle
+│   ├── loaders.py     ← CsvLoader / FeatherLoader / TensorLoader
+│   ├── splits.py      ← 6 种拆分策略
+│   ├── transforms.py  ← 8 种变换 + SlidingWindow
+│   └── pipeline.py    ← ForecastPipeline → PipelineBundle
 ├── models/
-│   ├── __init__.py        导出 register / get / list_models
-│   ├── base.py            BaseForecaster + TorchMixin/SklearnMixin/TSMixin
-│   ├── registry.py        @register 注册系统
-│   ├── torch_models/      10个模型 → @register + TorchMixin
-│   ├── sklearn_models/    6个模型  → @register + SklearnMixin
-│   └── ts_models/         2个模型  → @register + TSMixin
-├── trainer.py             EpiAITrainer（三路路由）
-├── losses.py              14个损失函数（保持不动）
-│
-# 旧代码保留（不维护，不移除）：
-├── train.py               旧训练循环
-└── time_serie_task.py     旧调度器
+│   ├── __init__.py    ← 导出 register / get / list_models
+│   ├── base.py        ← BaseForecaster + 3 Mixin
+│   ├── registry.py    ← @register 注册系统
+│   ├── torch_models/  ← 10 个模型（@register + TorchMixin）
+│   ├── sklearn_models/ ← 6 个模型（@register + SklearnMixin）
+│   └── ts_models/     ← 2 个模型（@register + TSMixin）
+├── trainer.py         ← EpiAITrainer + inverse_predictions + _compute_metrics
+├── inference.py       ← InferencePipeline + ModelVault + DeploymentRuntime
+├── losses.py          ← 14 个损失函数（保持不动）
+├── train.py           ← 旧训练循环（保持不动）
+└── time_serie_task.py ← 旧调度器（保持不动）
 ```
 
 ---
 
-## 11. 设计原则检查
+## 13. 设计原则
 
 | 原则 | 体现 |
 |------|------|
-| **扩展性** | 加一个模型 = 一个 .py 文件 + 一行 `@register`，不改别处 |
-| **闭合性** | 三种范式内部彻底隔离，Trainer 只有 3 路 dispatch |
-| **便捷性** | `get("LSTM")` + `trainer.fit(bundle)` 两行搞定 |
-| **运行效率** | Torch 走完整训练循环；Sklearn 一次 fit；TS 用 rolling origin |
-| **loss/optim 零干扰** | Sklearn/TS 无视这些参数，调用方不需要操心 |
-
----
-
-## 12. 测试覆盖
-
-```
-7 个测试文件，62 个测试用例，全部通过
-
-Phase 1: 数据集抽象层   7 tests
-Phase 2: DataLoaders    7 tests
-Phase 3: SplitStrategy  12 tests
-Phase 4: Transforms     15 tests
-Phase 5: ForecastPipeline 8 tests
-Phase 6: 集成验证       5 tests
-Phase 7: 端到端集成      8 tests
-
-注册模型总数: 29
-  torch:   11 (CNN, LSTM, CNN-LSTM, MLP, ResNet, TCN,
-             Transformer, DLinear, Autoformer, TimesNet)
-  sklearn: 13 (XGB, LGBM, TabPFN, RF, SVR, LinearReg + 别名)
-  ts:       5 (ARIMA, ETS + 别名)
-```
+| **扩展性** | 加一个模型 = 一个 .py + 一行 `@register`，不改别处 |
+| **闭合性** | 三种范式内部分离，Trainer 只有 3 路 dispatch |
+| **数据契约** | 所有修复都围绕「列、行、时间步」三维度做一致性维护 |
+| **部署就绪** | 从 `InferencePipeline` 到 `ModelVault` 到 `DeploymentRuntime`，逐层递进 |
