@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -561,4 +562,284 @@ class ModelVault:
         return f"ModelVault({len(self.models)} models, {len(self.metrics.columns)} metrics)"
 
 
-__all__ = ["InferencePipeline", "ModelVault"]
+# =====================================================================
+# DeploymentRuntime — production deployment with unified data table
+# =====================================================================
+
+class TimeGapError(ValueError):
+    """Raised when new data creates a time gap."""
+
+class TimeOrderError(ValueError):
+    """Raised when new data is older than the latest record."""
+
+class BufferError(RuntimeError):
+    """Raised when data_table has fewer rows than a model's lookback."""
+
+
+class DeploymentRuntime:
+    """Production runtime that maintains a persistent data table.
+
+    Each call to ``feed(new_data)`` appends data, checks time continuity,
+    and runs predictions for all models in the vault.  TS models are not
+    auto-updated — call ``update_model()`` explicitly.
+
+    Parameters
+    ----------
+    vault : ModelVault
+        Trained models.
+    time_col : str
+        Name of the time column.
+    time_unit : str, optional
+        Pandas offset alias (``\"MS\"``, ``\"D\"``, etc.).
+    strict : bool, default=True
+        When True, time gaps raise ``TimeGapError``.
+    """
+
+    def __init__(
+        self,
+        vault: ModelVault,
+        time_col: str = "time",
+        time_unit: str = "MS",
+        strict: bool = True,
+    ) -> None:
+        self.vault = vault
+        self.time_col = time_col
+        self.time_unit = time_unit
+        self.strict = strict
+        self._time_delta = pd.tseries.frequencies.to_offset(time_unit)
+        self._feed_count = 0
+        self._path: Optional[Path] = None
+
+        # data_table: shared persistent history
+        self.data_table: pd.DataFrame = pd.DataFrame()
+
+        # Infer train_end_time from the first model's meta
+        self._train_end_time: Optional[pd.Timestamp] = None
+
+    # ── Core feed ────────────────────────────────────────────────
+
+    def feed(self, new_data: pd.DataFrame) -> Dict[str, Any]:
+        """Process new observations and return predictions.
+
+        Parameters
+        ----------
+        new_data : pd.DataFrame
+            One or more rows with ``time_col`` and feature/target columns.
+
+        Returns
+        -------
+        dict of {name: {"time": DatetimeIndex, "pred": ndarray}}
+        """
+        new_data = new_data.copy()
+        self._check_time_continuity(new_data)
+        self.data_table = pd.concat(
+            [self.data_table, new_data], ignore_index=True
+        )
+        self._feed_count += 1
+
+        results: Dict[str, Any] = {}
+        last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+
+        for name, inferer in self.vault.models.items():
+            try:
+                if inferer.paradigm == "ts":
+                    # TS: forecast from current state (no auto-update)
+                    raw = inferer.forecast(inferer.horizon)
+                    future = pd.date_range(
+                        start=last_time + self._time_delta,
+                        periods=inferer.horizon,
+                        freq=self._time_delta,
+                    )
+                    results[name] = {"time": future, "pred": np.asarray(raw)[:, 0, 0]}
+
+                else:
+                    # Window model: pull last lookback rows
+                    lb = inferer.lookback
+                    if len(self.data_table) < lb:
+                        raise BufferError(
+                            f"{name} needs {lb} rows, "
+                            f"data_table has {len(self.data_table)}"
+                        )
+                    # Pass raw DataFrame slice — InferencePipeline handles
+                    # transforms + windowing internally
+                    x_df = self.data_table.tail(lb)[inferer.feature_names]
+                    raw = inferer.predict(x_df)
+                    future = pd.date_range(
+                        start=last_time + self._time_delta,
+                        periods=inferer.horizon,
+                        freq=self._time_delta,
+                    )
+                    results[name] = {"time": future, "pred": raw[0, :, 0]}
+
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        self._persist()
+        return results
+
+    # ── Explicit TS model update ─────────────────────────────────
+
+    def update_model(self, name: str, new_y: np.ndarray) -> None:
+        """Explicitly update a TS model's internal state.
+
+        This is a separate step from ``feed()`` — the user decides
+        when data quality is sufficient for a state update.
+        """
+        inferer = self.vault.get(name)
+        if inferer.paradigm != "ts":
+            raise TypeError(f"{name} is not a TS model.")
+
+        # Backup current state before updating
+        if self._path is not None:
+            backup_dir = self._path / "ts_backup" / name
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            np.save(
+                backup_dir / f"y_history_{self._feed_count}.npy",
+                inferer.model.y_history_,
+            )
+
+        inferer.update(np.asarray(new_y, dtype=np.float32))
+        self._persist()
+
+    def update_all_ts(self, data: pd.DataFrame) -> None:
+        """Batch-update all TS models (reserved for future retrain)."""
+        for name, inferer in self.vault.models.items():
+            if inferer.paradigm == "ts":
+                y_new = data[inferer.target_names].values.ravel().astype(np.float32)
+                self.update_model(name, y_new)
+
+    # ── Time continuity ──────────────────────────────────────────
+
+    def _check_time_continuity(self, new_data: pd.DataFrame) -> None:
+        new_times = pd.to_datetime(new_data[self.time_col])
+
+        if self.data_table.empty:
+            # First feed: must follow train_end_time
+            if self._train_end_time is not None:
+                expected = self._train_end_time + self._time_delta
+                if new_times[0] != expected:
+                    self._raise_or_warn(
+                        TimeGapError,
+                        f"First feed time {new_times[0]} does not follow "
+                        f"train_end {self._train_end_time}. Expected {expected}.",
+                    )
+            return
+
+        last = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+
+        # Check for disorder (new time <= last seen)
+        if new_times[0] <= last:
+            self._raise_or_warn(
+                TimeOrderError,
+                f"Time disorder: last={last}, new={new_times[0]}",
+            )
+
+        # Check each new row for continuity
+        expected = last + self._time_delta
+        for i, t in enumerate(new_times):
+            expected_i = expected + i * self._time_delta
+            if t != expected_i:
+                self._raise_or_warn(
+                    TimeGapError,
+                    f"Time gap: last={last}, expected={expected_i}, "
+                    f"got={t}. Missing {expected_i} ~ {t - self._time_delta}.",
+                )
+
+    def _raise_or_warn(self, exc_type, msg: str) -> None:
+        if self.strict:
+            raise exc_type(msg)
+        import warnings
+        warnings.warn(f"[DeploymentRuntime] {msg}", stacklevel=3)
+
+    # ── Persistence ──────────────────────────────────────────────
+
+    def _persist(self) -> None:
+        """Auto-save after each feed/update (no-op if never saved)."""
+        if self._path is not None:
+            self.save(str(self._path))
+
+    def _save_data_table(self, path: Path) -> None:
+        """Save data_table. Prefers parquet, falls back to CSV."""
+        if self.data_table.empty:
+            return
+        try:
+            self.data_table.to_parquet(path / "data_table.parquet")
+        except ImportError:
+            self.data_table.to_csv(path / "data_table.csv", index=False)
+
+    def save(self, path: Union[str, Path]) -> str:
+        """Persist runtime state to disk."""
+        path = Path(path)
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True)
+
+        self._path = path
+
+        # data_table
+        self._save_data_table(path)
+
+        # vault
+        self.vault.save(str(path / "vault"))
+
+        # meta
+        meta = {
+            "feed_count": self._feed_count,
+            "time_col": self.time_col,
+            "time_unit": self.time_unit,
+            "strict": self.strict,
+            "train_end_time": str(self._train_end_time) if self._train_end_time else None,
+            "last_time": str(self.data_table[self.time_col].iloc[-1])
+            if not self.data_table.empty else None,
+            "n_rows": len(self.data_table),
+        }
+        (path / "runtime_meta.json").write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False)
+        )
+
+        return str(path.resolve())
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "DeploymentRuntime":
+        """Restore runtime state from disk."""
+        path = Path(path)
+        meta_path = path / "runtime_meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Not a DeploymentRuntime directory: {path}")
+
+        meta = json.loads(meta_path.read_text())
+        vault = ModelVault.load(str(path / "vault"))
+
+        runtime = cls(
+            vault=vault,
+            time_col=meta["time_col"],
+            time_unit=meta["time_unit"],
+            strict=meta["strict"],
+        )
+        runtime._feed_count = meta["feed_count"]
+        runtime._path = path
+
+        if meta["train_end_time"]:
+            runtime._train_end_time = pd.Timestamp(meta["train_end_time"])
+
+        # Restore data_table
+        dt_path = path / "data_table.parquet"
+        if dt_path.exists():
+            runtime.data_table = pd.read_parquet(dt_path)
+        else:
+            csv_path = path / "data_table.csv"
+            if csv_path.exists():
+                runtime.data_table = pd.read_csv(csv_path)
+
+        return runtime
+
+    def __repr__(self) -> str:
+        return (
+            f"DeploymentRuntime({len(self.vault.models)} models, "
+            f"{len(self.data_table)} rows, "
+            f"feed_count={self._feed_count})"
+        )
+
+
+__all__ = ["InferencePipeline", "ModelVault", "DeploymentRuntime",
+           "TimeGapError", "TimeOrderError", "BufferError"]
