@@ -1,266 +1,317 @@
-# 模型部署与实时数据管道设计
+# 部署管道设计 v2
 
-> 当模型部署到生产环境后，如何持续接收新数据、维持模型状态、
-> 保证时间连续性、输出预测结果。
-
----
-
-## 1. 生产环境数据流
-
-```
-实时数据源（疾控中心 / API / 手动录入）
-    │
-    ▼
-┌──────────────────────────────────────────┐
-│            DeploymentRuntime             │
-│                                          │
-│  每批次新数据到达 → feed(new_df)          │
-│    ├─ 检查时间连续性                       │
-│    ├─ 更新滚动 buffer                      │
-│    ├─ TS 模型: update(y) → forecast(k)    │
-│    ├─ 窗口模型: buffer → predict(X)        │
-│    └─ 输出: {模型名: (时间轴, 预测值)}     │
-└──────────────────────────────────────────┘
-    │
-    ▼
-  Dashboard / 报表 / 预警
-```
+> 根据讨论后的修订版。核心变化：`DeploymentRuntime` 维护统一数据表，
+> 每个模型从中按需取数据，TS 模型默认 align 模式，所有状态持久化到磁盘。
 
 ---
 
-## 2. 三族模型的更新模式
-
-### 2.1 窗口模型（torch / sklearn）
+## 1. 架构总览
 
 ```
-         ┌──────────────────────────────┐
-buffer:  │ r0 │ r1 │ r2 │ … │ r14 │ r15 │  ← 最后 lookback+horizon-1 行
-         └──────────────────────────────┘
-                      │ 每次 feed 从 buffer 末尾取 lookback 行
-                      ▼
-                model.predict(X)  →  (1, horizon, target_dim)
-                      │
-                      ▼ 结果
-                未来 k 步（相对于 buffer 末尾）
+┌─────────────────────────────────────────────────────────────┐
+│                    DeploymentRuntime                        │
+│                                                             │
+│  data_table (持久化 DataFrame, 存磁盘)                        │
+│  ┌──────┬──────┬──────┬──────┐                              │
+│  │ time │cases │temp  │humid │  ← 所有历史数据（特征+目标）  │
+│  ├──────┼──────┼──────┼──────┤                              │
+│  │ ...  │ ...  │ ...  │ ...  │                              │
+│  │ 2026 │ 1200 │ 22.5 │ 0.6  │  ← feed(new_row) 追加        │
+│  └──────┴──────┴──────┴──────┘                              │
+│                       │                                     │
+│          ┌────────────┼────────────┐                        │
+│          ▼            ▼            ▼                        │
+│       window_1     window_2     TS_model                    │
+│       lookback=12  lookback=6   horizon=3                   │
+│       horizon=3    horizon=2    ts_mode="align"             │
+│          │            │            │                        │
+│          └────────────┴────────────┘                        │
+│                       ▼                                     │
+│       结果: {模型名: (时间轴, 预测值)}                         │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**特性：**
-- 无状态，每次预测独立
-- buffer 只用于构造窗口，不进入模型
-- 时间连续性由 buffer 的插入顺序保证
-
-### 2.2 时序模型（ARIMA / ETS）
-
-```
-模型内部状态:
-  y_history_ = [y0, y1, …, yt]
-  隐含时间:    [t0, t1, …, tt]
-
-feed(new_y = [yt+1, yt+2]):
-  ① update([yt+1, yt+2]) → y_history_ 追加
-  ② forecast(3)          → [yt+3, yt+4, yt+5]
-```
-
-**特性：**
-- 有状态，`y_history_` 是模型的一部分
-- `update()` 改变内部状态，影响后续所有预测
-- **时间连续性至关重要**——缺口直接导致预测偏移
 
 ---
 
-## 3. 时间连续性检查
+## 2. 核心概念
 
-### 3.1 什么情况下出问题
+### 2.1 统一数据表
+
+`DeploymentRuntime` 内部维护一张持久化的 DataFrame，包含所有历史数据：
 
 ```
-正确:
-  t0, t1, t2, t3, t4, t5, …                           → 连续
-
-有缺口:
-  t0, t1, t2, t3, t6, t7, …                            → t4, t5 缺失
-
-乱序:
-  t0, t1, t2, t5, t3, t4, …                            → 时间回退
-
-新模型上线:
-  ──── 训练数据 ————│──────── 部署数据 ─────────────
-  训练结束于 tt      新数据从 tt+1 开始                  → 衔接正常
-
-新模型上线（跨越过大）:
-  训练结束于 tt      新数据从 tt+10 开始                 → 需要填充
+data_table:
+   time     | 登革热  |  t2m_mean  |  tcc_mean  |  province  | ...
+  ──────────┼───────┼──────────┼──────────┼───────────┼────
+   2024-01  |  500  |   22.5   |   0.6    |   广东    |
+   2024-02  |  300  |   23.1   |   0.5    |   广东    |
+   ...      |  ...  |   ...    |   ...    |   ...     |
+   2026-03  | 1200  |   28.5   |   0.7    |   广东    |
+              ↑ feed(new_data) 追加到此
 ```
 
-### 3.2 连续性规则
+- 新增、修改都在这个表上操作
+- 每个模型从 table 中取自己需要的列和行
+- 表本身持久化到磁盘（parquet / feather 格式）
 
-| 检查项 | 规则 | 处理方式 |
-|--------|------|---------|
-| **新数据比最近记录晚 1 步** | 正常 | 直接追加 |
-| **新数据与最近记录之间有空缺** | 检测到缺口 | 警告 + 可选择插值或拒绝 |
-| **新数据时间 ≤ 最近记录时间** | 乱序 | 错误，拒绝 |
-| **新数据是训练结束后第一次到达** | 检查是否紧接训练结束 | 正常（注意上下文衔接） |
+### 2.2 每个模型按需取数
 
-### 3.3 元数据设计
+| 模型类型 | 从 data_table 取什么 |
+|---------|---------------------|
+| 窗口模型（torch/sklearn） | `table.tail(lookback)[feature_cols]` → 构造 (1, lookback, n_features) |
+| 时序模型（TS） | `table.tail(新数据行数)[target_cols]` → `update(y_new)` |
 
-每个训练产物需要记录时间元信息：
+### 2.3 模型各自的 horizon
+
+每个模型训练时保存了自己的 `horizon`：
 
 ```python
-{
-  "time_meta": {
-    "train_end": "2026-03-01",         # 训练集最后一条的时间
-    "train_start": "2010-01-01",       # 训练集第一条的时间
-    "time_unit": "MS",                 # Month Start
-    "time_col": "Year/Month",          # 原始时间列名
-  }
-}
-```
+# RF 模型: horizon=3
+# LSTM 模型: horizon=6
+# ETS 模型: horizon=3
 
-TS 模型额外记录 `y_history_` 的时间范围：
-
-```python
+# 推理时各自输出不同长度：
 {
-  "ts_state_meta": {
-    "history_start": "2010-01-01",
-    "history_end": "2026-03-01",       # 即 train_end
-    "n_observations": 195,
-  }
+  "RF":   {"time": [2026-05, 2026-06, 2026-07],           "pred": [1200, 800, 600]},
+  "LSTM": {"time": [2026-05, 2026-06, 2026-07, 2026-08, 2026-09, 2026-10],
+                                                           "pred": [1100, 900, 700, 500, 300, 200]},
+  "ETS":  {"time": [2026-05, 2026-06, 2026-07],           "pred": [1150, 850, 650]},
 }
 ```
 
 ---
 
-## 4. DeploymentRuntime 设计
-
-### 4.1 接口
+## 3. feed() 内部流程
 
 ```python
-runtime = DeploymentRuntime(
-    vault=model_vault,
-    lookback=12,
-    horizon=3,
-    feature_cols=["t2m_mean", "tcc_mean"],
-    time_col="time",
-    time_unit="MS",
-    strict=True,         # True=时间缺口时报错, False=仅警告
+def feed(self, new_data: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Parameters
+    ----------
+    new_data : pd.DataFrame
+        新到达的数据行（1 行或多行），必须包含 time_col 和所有特征/目标列
+
+    Returns
+    -------
+    dict
+        {模型名: {"time": 时间轴列表, "pred": 预测值数组}}
+    """
+```
+
+### 3.1 时间连续性检查
+
+```python
+def _check_time_continuity(self, new_data):
+    new_times = pd.to_datetime(new_data[self.time_col])
+    
+    if self.data_table.empty:
+        # 首次 feed：检查是否紧接训练结束时间
+        expected = self._train_end_time + self._time_delta
+        if new_times[0] != expected:
+            raise TimeGapError(
+                f"首次 feed 时间 {new_times[0]} 不连续于 "
+                f"训练结束时间 {self._train_end_time}。"
+                f"期望 {expected}，间隔 {new_times[0] - expected}"
+            )
+    else:
+        last = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+        expected = last + self._time_delta
+
+        # 检查每个新行是否连续
+        for i, t in enumerate(new_times):
+            expected_i = expected + i * self._time_delta
+            if t != expected_i:
+                raise TimeGapError(
+                    f"时间不连续：上次 {last}，期望 {expected_i}，"
+                    f"实际 {t}。缺失 {expected_i} ~ {t - self._time_delta}"
+                )
+    
+    # 检查是否乱序（新数据时间不能 ≤ 表中最新时间）
+    if not self.data_table.empty:
+        last = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+        if new_times[0] <= last:
+            raise TimeOrderError(
+                f"时间乱序：表中最新 {last}，新数据 {new_times[0]}"
+            )
+```
+
+**严格模式（默认）：** 任何缺口或乱序直接抛异常。
+**宽松模式（`strict=False`）：** 警告但不阻塞。
+
+### 3.2 追加数据
+
+```python
+self.data_table = pd.concat(
+    [self.data_table, new_data], ignore_index=True
 )
-
-# 唯一入口：每批次新数据到达时调用
-result = runtime.feed(new_df)
-
-# result = {
-#   "RF":     {"time": [2026-05, 2026-06, 2026-07], "pred": [1200, 800, 600]},
-#   "ETS":    {"time": [2026-05, 2026-06, 2026-07], "pred": [1100, 900, 700]},
-#   "ARIMA":  {"time": [2026-05, 2026-06, 2026-07], "pred": [1150, 850, 650]},
-#   "time_meta": {"last_seen": "2026-04-01", "status": "continuous"},
-# }
 ```
 
-### 4.2 feed() 内部流程
+### 3.3 模型推理
 
 ```python
-def feed(self, new_df: pd.DataFrame) -> Dict[str, Any]:
-    # 1. 时间检查
-    new_times = new_df[self.time_col]
-    _check_continuity(new_times, self._last_time)
-    self._last_time = new_times[-1]
-
-    # 2. 更新滚动 buffer
-    self._buffer = pd.concat([self._buffer, new_df]).tail(self._buffer_size)
-
-    # 3. 遍历所有模型并行推理
-    results = {}
-    for name, inferer in self.vault.models.items():
+results = {}
+for name, inferer in self.vault.models.items():
+    try:
         if inferer.paradigm == "ts":
-            # TS 模型: update + forecast
-            y_new = new_df[self.target_names[0]].values
-            inferer.update(np.asarray(y_new, dtype=np.float32))
-            raw = inferer.forecast(self.horizon)
-            results[name] = raw[:, 0, 0]
+            # ── TS 模型 ───────────────────────────
+            y_new = new_data[inferer.target_names].values.ravel().astype(np.float32)
+            inferer.update(y_new)
+            # align 模式：从最新时间点 forecast(horizon)
+            raw = inferer.forecast(inferer.horizon)
+
+            last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+            future_times = pd.date_range(
+                start=last_time + self._time_delta,
+                periods=inferer.horizon,
+                freq=self._time_delta,
+            )
+            results[name] = {"time": future_times, "pred": raw[:, 0, 0]}
+
         else:
-            # 窗口模型: 从 buffer 构造窗口
-            X_batch = self._buffer[self.feature_cols].tail(
-                self.lookback
-            ).values[np.newaxis, :, :]
+            # ── 窗口模型（torch / sklearn）───────────
+            lookback = inferer.lookback
+            if len(self.data_table) < lookback:
+                raise BufferError(
+                    f"{name} 需要 {lookback} 行历史，"
+                    f"data_table 只有 {len(self.data_table)} 行"
+                )
+            X_batch = (
+                self.data_table[inferer.feature_names]
+                .tail(lookback)
+                .values[np.newaxis, :, :]
+            )
             raw = inferer.predict(X_batch)
-            results[name] = raw[0, :, 0]
 
-    return self._format_output(results)
+            last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+            future_times = pd.date_range(
+                start=last_time + self._time_delta,
+                periods=inferer.horizon,
+                freq=self._time_delta,
+            )
+            results[name] = {"time": future_times, "pred": raw[0, :, 0]}
+    except Exception as e:
+        results[name] = {"error": str(e)}
+
+return results
 ```
 
-### 4.3 buffer 管理
+### 3.4 持久化
+
+每次 feed 后自动保存：
 
 ```python
-# buffer 大小 = lookback + horizon - 1  ← 确保能构造至少一个窗口
-# 每次 feed 后自动 trim = buffer.tail(lookback + horizon - 1)
+def _persist(self):
+    # 1. 保存 data_table
+    self.data_table.to_parquet(self._path / "data_table.parquet")
+    
+    # 2. 备份旧的 TS 模型状态（回滚用）
+    for name in self.vault.models:
+        if self.vault[name].paradigm == "ts":
+            # 备份当前 y_history_ 到磁盘
+            backup_dir = self._path / "ts_backup" / name
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            np.save(backup_dir / f"y_history_{self._feed_count}.npy",
+                    self.vault[name].model.y_history_)
+    
+    # 3. 保存 vault（含所有模型）
+    self.vault.save(str(self._path / "vault"))
+    
+    # 4. 保存 runtime 元数据
+    meta = {
+        "feed_count": self._feed_count,
+        "last_time": str(self.data_table[self.time_col].iloc[-1]),
+        "n_rows": len(self.data_table),
+    }
+    (self._path / "runtime_meta.json").write_text(json.dumps(meta))
 ```
-
-但实际部署时，buffer 的最小需求不是固定的：
-
-| 场景 | 需要 buffer 长度 |
-|------|----------------|
-| 一次预测 horizon 步 | `lookback + horizon - 1` |
-| 多次快速 feed（每步 feed 1 行） | `lookback` |
-| 用户手动指定更多历史 | 可配置 `buffer_size` |
-
-### 4.4 TS 模型的滚动策略
-
-```python
-class DeploymentRuntime:
-    ts_mode: Literal["roll", "align"]
-        # "roll":  每次 forecast(horizon) → 固定输出 horizon 步
-        # "align": 从 buffer 的时间轴自动计算还需要预测多少步
-```
-
-**"roll" 模式（标准滚动）：**
-
-```python
-# 假设 horizon=3, 时间单位="月"
-feed(t=4月数据) → update(y=4月) → forecast(3) → [5月, 6月, 7月]
-feed(t=5月数据) → update(y=5月) → forecast(3) → [6月, 7月, 8月]
-```
-
-**"align" 模式（自动对齐）：**
-
-```python
-# buffer 知道当前最新时间是 4月，下一次预测从 5月开始
-feed(t=4月数据) → update(y=4月)
-  → 检查 buffer 最新时间 → 5月
-  → forecast(k 步，直到 horizon 覆盖)
-```
-
-"align" 模式更鲁棒——如果某次 feed 了 2 行数据，`forecast` 自动少预测 1 步，避免时间轴跳变。
 
 ---
 
-## 5. 与推理管道的集成
+## 4. 状态持久化
 
-当前现有组件的关系：
+### 4.1 磁盘结构
+
+```
+/tmp/dengue_deployment/
+├── runtime_meta.json              # feed 计数、最新时间
+├── data_table.parquet             # 全部历史数据
+├── vault/                         # ModelVault 目录（manifest + 各模型）
+│   ├── manifest.json
+│   ├── RF/
+│   │   ├── model.zip
+│   │   └── meta.json
+│   ├── ETS/
+│   │   ├── model.zip
+│   │   └── meta.json
+│   └── ...
+└── ts_backup/                     # TS 模型历史状态备份
+    ├── ETS/
+    │   ├── y_history_0.npy        # 第 0 次 feed 前的状态
+    │   ├── y_history_1.npy        # 第 1 次 feed 前的状态
+    │   └── ...
+    └── ARIMA/
+        ├── y_history_0.npy
+        └── ...
+```
+
+### 4.2 启动恢复
+
+```python
+@classmethod
+def load(cls, path):
+    """从磁盘恢复完整运行时状态。"""
+    path = Path(path)
+    meta = json.loads((path / "runtime_meta.json").read_text())
+    data_table = pd.read_parquet(path / "data_table.parquet")
+    vault = ModelVault.load(str(path / "vault"))
+    return cls(vault=vault, data_table=data_table, **meta)
+```
+
+---
+
+## 5. 各组件关系
 
 ```
 EpiAITrainer.fit(bundle)
     │
     ▼
-InferencePipeline     ← 单个模型的推理（变换→滑窗→预测→反标准化）
+InferencePipeline    ← 单模型的一次性推理（离线）
     │
     ▼
-ModelVault            ← 多模型管理（保存/加载/对比）
+ModelVault           ← 多模型管理（存/取/对比）
     │
     ▼
-DeploymentRuntime     ← 生产部署（时间检查/buffer/update/每日 feed）
+DeploymentRuntime    ← 生产部署（统一数据表 + 时间检查 + 持久化）
 ```
 
-- `InferencePipeline`：负责**一次性的**新数据预测，适用于离线/一次性的场景
-- `ModelVault`：负责**多模型的**存储和组织
-- `DeploymentRuntime`：负责**持续的**生产 feed，包含时间连续性逻辑
-
-三者是递进关系，不互斥。
+三者的关系是**递进但不互斥**：
+- `InferencePipeline` 适合离线实验一次预测
+- `ModelVault` 适合模型比较和归档
+- `DeploymentRuntime` 适合生产环境每日 feed
 
 ---
 
-## 6. 待确认的问题
+## 6. 时间连续性规则总结
 
-| 问题 | 选项 |
+| 场景 | 行为 |
 |------|------|
-| 时间缺口时自动插值还是报错？ | 可选 `strict=True/False` |
-| buffer 持久化？ | 每次 feed 后保存到磁盘？还是纯内存？ |
-| `ts_mode` 的默认值 | `"roll"`（简单直接）还是 `"align"`（更鲁棒）？ |
-| 多个模型的不同 horizon？ | 统一用 vault 的配置，或者各自独立？ |
+| 新数据紧接表中最后一条 | ✅ 正常追加 |
+| 新数据与最后一条之间有缺口 | ❌ `TimeGapError` |
+| 新数据时间 ≤ 表中最后时间 | ❌ `TimeOrderError` |
+| 首次 feed 不接训练结束时间 | ❌ `TimeGapError` |
+| 新数据到达但 data_table 行数 < lookback | ❌ `BufferError` |
+| strict=False 模式 | ⚠️ 缺口/乱序仅警告，不阻塞 |
+
+---
+
+## 7. 待实现清单
+
+| 功能 | 优先级 |
+|------|--------|
+| `DeploymentRuntime` 核心类 + `feed()` | P0 |
+| 时间连续性检查 | P0 |
+| data_table 持久化（parquet） | P0 |
+| TS 模型状态备份 | P1 |
+| `align` 模式（时间轴自动对齐） | P1 |
+| `strict=False` 宽松模式 | P2 |
+| Dashboard 集成（输出 → 绘图） | P2 |
