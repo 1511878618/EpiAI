@@ -8,7 +8,7 @@
 
 ```python
 import sys, os
-sys.path.insert(0, "src")
+sys.path.insert(0, os.path.abspath("../src"))
 import numpy as np
 import pandas as pd
 
@@ -27,7 +27,7 @@ from EpiAI.inference import InferencePipeline
 ## 2. 数据加载
 
 ```python
-df_raw = pd.read_csv("data/Infective_disease_china-V3.csv")
+df_raw = pd.read_csv("../data/Infective_disease_china-V3.csv")
 
 # 筛选登革热
 df = df_raw[df_raw["Diseases"] == "登革热 Dengue fever"].copy()
