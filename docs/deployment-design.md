@@ -148,27 +148,15 @@ self.data_table = pd.concat(
 
 ### 3.3 模型推理
 
+TS 模型默认不自动 update，只 forecast。窗口模型正常 predict。
+显式 update 作为独立接口。
+
 ```python
 results = {}
 for name, inferer in self.vault.models.items():
     try:
-        if inferer.paradigm == "ts":
-            # ── TS 模型 ───────────────────────────
-            y_new = new_data[inferer.target_names].values.ravel().astype(np.float32)
-            inferer.update(y_new)
-            # align 模式：从最新时间点 forecast(horizon)
-            raw = inferer.forecast(inferer.horizon)
-
-            last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
-            future_times = pd.date_range(
-                start=last_time + self._time_delta,
-                periods=inferer.horizon,
-                freq=self._time_delta,
-            )
-            results[name] = {"time": future_times, "pred": raw[:, 0, 0]}
-
-        else:
-            # ── 窗口模型（torch / sklearn）───────────
+        # ── 窗口模型（torch / sklearn）───────────
+        if inferer.paradigm != "ts":
             lookback = inferer.lookback
             if len(self.data_table) < lookback:
                 raise BufferError(
@@ -189,13 +177,55 @@ for name, inferer in self.vault.models.items():
                 freq=self._time_delta,
             )
             results[name] = {"time": future_times, "pred": raw[0, :, 0]}
+
+        else:
+            # ── TS 模型 ───────────────────────────
+            # 默认不 update，基于当前已积累的状态 forecast
+            raw = inferer.forecast(inferer.horizon)
+
+            last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+            future_times = pd.date_range(
+                start=last_time + self._time_delta,
+                periods=inferer.horizon,
+                freq=self._time_delta,
+            )
+            results[name] = {"time": future_times, "pred": raw[:, 0, 0]}
+
     except Exception as e:
         results[name] = {"error": str(e)}
 
 return results
 ```
 
-### 3.4 持久化
+### 3.4 显式模型更新（独立接口）
+
+```python
+def update_model(self, name: str, new_y: np.ndarray) -> None:
+    """显式更新单个 TS 模型的内部状态。
+
+    由用户在确认数据质量后手动调用。后续可扩展为定期批量更新机制。
+    """
+    inferer = self.vault.get(name)
+    if inferer.paradigm != "ts":
+        raise TypeError(f"{name} 不是 TS 模型，不支持 update。")
+
+    # 备份当前状态（回滚用）
+    backup_dir = self._path / "ts_backup" / name
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    np.save(backup_dir / f"y_history_{self._feed_count}.npy",
+            inferer.model.y_history_)
+
+    # 执行更新
+    inferer.update(np.asarray(new_y, dtype=np.float32))
+    self._persist()
+
+def update_all_ts(self, data: pd.DataFrame) -> None:
+    """批量更新所有 TS 模型。为未来自动重训/增量学习预留接口。"""
+    for name, inferer in self.vault.models.items():
+        if inferer.paradigm == "ts":
+            y_new = data[inferer.target_names].values.ravel().astype(np.float32)
+            self.update_model(name, y_new)
+```
 
 每次 feed 后自动保存：
 
