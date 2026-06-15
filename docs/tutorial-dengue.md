@@ -95,11 +95,8 @@ for name in sklearn_names:
 
     try:
         if name in ["ETS", "ARIMA"]:
-            # TS models: features must NOT overlap with targets
-            _overlap = set(bundle.feature_names) & set(bundle.target_names)
-            if _overlap:
-                print(f"  ⚠️ {name:5s}  跳过（TS 模型不支持目标列作为特征）")
-                continue
+            # TS models: overlapping feature/target columns are
+            # automatically stripped (ARIMA models y from its own past)
             model = model_cls(**extra)
         else:
             model = model_cls(
