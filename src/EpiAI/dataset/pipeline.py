@@ -249,13 +249,13 @@ class ForecastPipeline:
             entity_col=data.entity_col,
         )
 
-        # Val/test windows: prepend lookback context from previous split(s).
-        # This ensures the first window of each split has enough history
-        # to form a valid input, without losing rows at boundaries.
-        lookback = self.window.lookback
+        # Val/test windows: prepend context from previous split(s).
+        # Context must be at least (lookback + horizon - 1) so that
+        # the first horizon step (index 0) covers ALL test/val rows.
+        context_len = max(self.window.lookback + self.window.horizon - 1, 1)
 
         if val_df is not None:
-            _val_ctx = train_df.iloc[-lookback:] if len(train_df) >= lookback else train_df
+            _val_ctx = train_df.iloc[-context_len:] if len(train_df) >= context_len else train_df
             val_w = self.window.apply(
                 pd.concat([_val_ctx, val_df]),
                 target_cols=data.target_cols,
@@ -272,7 +272,7 @@ class ForecastPipeline:
 
         if test_df is not None:
             _prev_for_test = train_df if val_df is None else pd.concat([train_df, val_df])
-            _test_ctx = _prev_for_test.iloc[-lookback:] if len(_prev_for_test) >= lookback else _prev_for_test
+            _test_ctx = _prev_for_test.iloc[-context_len:] if len(_prev_for_test) >= context_len else _prev_for_test
             test_w = self.window.apply(
                 pd.concat([_test_ctx, test_df]),
                 target_cols=data.target_cols,
