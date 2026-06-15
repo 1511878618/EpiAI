@@ -126,24 +126,39 @@ print(vault.summary().to_string())
 
 ---
 
-## 6. 全部模型预测可视化
+## 6. 全部模型预测可视化（时间轴）
 
 ```python
-y_test = bundle.get_y_series("test")
-n = bundle.get_y_series("test").shape[0]
+all_time = bundle.train_df["time"].tolist() + bundle.test_df["time"].tolist()
+y_all = np.concatenate([bundle.get_y_series("train").ravel(),
+                        bundle.get_y_series("test").ravel()])
 
 plt.figure(figsize=(14, 6))
-plt.plot(y_test, "o-", label="实际值", color="black", alpha=0.7, linewidth=2)
 
+# 训练集曲线
+plt.plot(all_time[:len(bundle.train_df)], y_all[:len(bundle.train_df)],
+         "-", label="训练集", color="#95a5a6", alpha=0.5)
+
+# 测试集实际值
+test_start = len(bundle.train_df)
+plt.plot(all_time[test_start:], bundle.get_y_series("test").ravel(),
+         "o-", label="实际值", color="black", alpha=0.8, linewidth=2)
+
+# 各模型预测值
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for (name, r), color in zip(results.items(), colors):
-    preds = r.predictions[:, -1, 0]
+    n = r.predictions.shape[0]
+    preds = r.predictions[:, 0, 0]
     m = r.metrics.iloc[0]
-    plt.plot(preds, "s--", label=f"{name}  (R²={m['R2']:.3f})", color=color, alpha=0.6)
+    # 预测值对齐到测试集的对应时间点
+    pred_time = all_time[test_start:test_start + n]
+    plt.plot(pred_time, preds, "s--", label=f"{name}  (R²={m['R2']:.3f})",
+             color=color, alpha=0.6, markersize=4)
 
 plt.legend(fontsize=9, ncol=3)
 plt.title("登革热月发病数 — 多模型预测对比", fontsize=14)
-plt.ylabel("病例数"); plt.xlabel("测试样本序号"); plt.grid(alpha=0.3)
+plt.ylabel("病例数"); plt.xlabel("时间"); plt.grid(alpha=0.3)
+plt.xticks(rotation=45)
 plt.tight_layout()
 plt.savefig("/tmp/dengue_all_models.png", dpi=150)
 plt.show()
@@ -197,7 +212,56 @@ vault.save("/tmp/dengue_vault/")
 
 ---
 
-## 8. 附录
+## 8. 未来预测图
+
+```python
+# 用最佳模型预测未来 3 个月
+best_name = vault.best("R2")
+inferer = vault.get(best_name)
+
+# 时间轴（复用于绘图）
+all_time = bundle.train_df["time"].tolist() + bundle.test_df["time"].tolist()
+y_all = np.concatenate([bundle.get_y_series("train").ravel(),
+                        bundle.get_y_series("test").ravel()])
+
+# 构建未来时间轴
+last_time = pd.to_datetime(all_time[-1])
+future_dates = pd.date_range(start=last_time + pd.DateOffset(months=1),
+                              periods=3, freq="MS")
+
+if inferer.paradigm == "ts":
+    fc = inferer.forecast(3)
+    future_pred = fc[:, 0, 0]
+else:
+    pred = inferer.predict(bundle.train_df.tail(15).copy()[bundle.feature_names])
+    future_pred = pred[0, :, 0]
+
+plt.figure(figsize=(14, 5))
+
+# 全部历史
+plt.plot(all_time, y_all, "-", label="历史实际值", color="#2c3e50", linewidth=1.5)
+
+# 未来预测
+plt.plot(future_dates, future_pred, "o--", color="#e74c3c",
+         linewidth=2, markersize=6, label=f"预测 (3个月)")
+
+# 分界线 + 标注
+plt.axvline(x=last_time, color="gray", linestyle=":", alpha=0.5)
+plt.text(last_time, plt.ylim()[1] * 0.95, "← 历史 | 预测 →",
+         ha="center", fontsize=10, color="gray")
+
+plt.legend(fontsize=11)
+plt.title(f"{best_name} — 登革热未来 3 个月预测", fontsize=14, fontweight="bold")
+plt.ylabel("病例数"); plt.xlabel("时间"); plt.grid(alpha=0.3)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig("/tmp/dengue_forecast.png", dpi=150)
+plt.show()
+```
+
+---
+
+## 9. 附录
 
 ```python
 print("可用模型:", list_models("torch"), list_models("sklearn"), list_models("ts"))
