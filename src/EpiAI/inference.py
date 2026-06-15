@@ -645,10 +645,10 @@ class DeploymentRuntime:
                 if inferer.paradigm == "ts":
                     # TS: forecast from current state (no auto-update).
                     # Each feed advances the prediction window:
-                    #   feed 1: forecast(horizon) → [t+1, t+2, t+3]
-                    #   feed 2: forecast(horizon+1) → take last 3 → [t+2, t+3, t+4]
-                    #   feed 3: forecast(horizon+2) → take last 3 → [t+3, t+4, t+5]
-                    n_fcst = inferer.horizon + self._feed_count
+                    #   feed 1: forecast(horizon)     → [t+1, t+2, t+3]
+                    #   feed 2: forecast(horizon+1)   → take last 3 → [t+2, t+3, t+4]
+                    #   feed 3: forecast(horizon+2)   → take last 3 → [t+3, t+4, t+5]
+                    n_fcst = inferer.horizon + max(0, self._feed_count - 1)
                     raw = inferer.forecast(n_fcst)
                     preds = np.asarray(raw, dtype=np.float32)
                     # Take the last horizon steps that correspond to NOW + future
