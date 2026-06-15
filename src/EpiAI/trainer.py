@@ -206,15 +206,21 @@ class EpiAITrainer:
         y_train = bundle.get_y_series("train").squeeze()
         y_test = bundle.get_y_series("test").squeeze()
 
-        # Try with X features first, fall back to univariate
-        try:
+        # For TS models, don't pass features that overlap with targets
+        # (otherwise ARIMA sees future target values as exogenous variables)
+        _is_pure_ar = set(bundle.feature_names) == set(bundle.target_names)
+        if _is_pure_ar:
+            X_train = X_test = None
+        else:
             X_train = bundle.get_X_series("train") if bundle.feature_names else None
             X_test = bundle.get_X_series("test") if bundle.feature_names else None
+
+        # Try with X features first, fall back to univariate
+        try:
             self.model.fit_sequence(y_train, X_train)
             preds = self.model.predict_sequence(y_test, X_test, update_state=True)
         except (ValueError, TypeError) as e:
             if "X" in str(e) or "exogenous" in str(e) or "X_train" in str(e):
-                # Model doesn't support exogenous variables
                 self.model.fit_sequence(y_train, None)
                 preds = self.model.predict_sequence(y_test, None, update_state=True)
             else:
