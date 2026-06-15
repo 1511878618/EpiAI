@@ -94,10 +94,14 @@ for name in sklearn_names:
         extra["svm_params"] = {"kernel": "rbf", "C": 1.0}
 
     try:
-        model = model_cls(
-            input_dim=bundle.n_features, lookback=12,
-            horizon=3, target_dim=1, **extra,
-        )
+        if name in ["ETS", "ARIMA"]:
+            # TS models have their own constructor — don't pass window params
+            model = model_cls(**extra)
+        else:
+            model = model_cls(
+                input_dim=bundle.n_features, lookback=12,
+                horizon=3, target_dim=1, **extra,
+            )
         result = EpiAITrainer(model=model, verbose=False).fit(bundle)
         metric = result.metrics.iloc[0]
         results.append({"model": name, "MAE": metric["MAE"],
@@ -150,19 +154,27 @@ print(comp.to_string(index=False))
 
 ```python
 best_name = comp.iloc[0]["model"]
-best_model = get(best_name)
+print(f"最佳模型: {best_name}")
 
 # 重新训练最佳模型
-extra = {}
+best_extra = {}
 if best_name == "RF":
-    extra["rf_params"] = {"n_estimators": 200, "max_depth": 10, "random_state": 42}
+    best_extra["rf_params"] = {"n_estimators": 200, "max_depth": 10, "random_state": 42}
 elif best_name == "XGB":
-    extra["xgb_params"] = {"n_estimators": 200, "random_state": 42}
+    best_extra["xgb_params"] = {"n_estimators": 200, "random_state": 42}
+elif best_name == "ETS":
+    best_extra = {"seasonal_periods": 12, "seasonal": "add", "trend": "add"}
+elif best_name == "ARIMA":
+    best_extra = {"seasonal": True, "m": 12}
 
-best_model = best_model(
-    input_dim=bundle.n_features, lookback=12,
-    horizon=3, target_dim=1, **extra,
-)
+best_cls = get(best_name)
+if best_name in ["ETS", "ARIMA"]:
+    best_model = best_cls(**best_extra)
+else:
+    best_model = best_cls(
+        input_dim=bundle.n_features, lookback=12,
+        horizon=3, target_dim=1, **best_extra,
+    )
 best_result = EpiAITrainer(model=best_model, verbose=False).fit(bundle)
 best_result._bundle = bundle
 
