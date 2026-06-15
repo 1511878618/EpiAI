@@ -151,21 +151,48 @@ plt.show()
 
 ---
 
-## 7. 最佳模型推理部署
+## 7. 模型部署与实时更新
 
 ```python
+vault = ModelVault.load("/tmp/dengue_vault/")
+
+# ── 场景 1：所有模型对新数据做预测 ─────────────────────────
+# 窗口模型需要特征列，TS 模型自动走 forecast
+new_data = bundle.train_df.tail(15).copy()[bundle.feature_names]
+
+all_preds = vault.predict_all(new_data=new_data, steps=6)
+print("所有模型推理结果：")
+for name, pred in all_preds.items():
+    p = vault.get(name).paradigm
+    val = pred[0, 0, 0] if p != "ts" else pred[0, 0, 0]
+    print(f"  {name:8s} ({p:7s})  → 预测={val:.0f}  形状={pred.shape}")
+
+# ── 场景 2：新观测值到达，更新时序模型 ─────────────────────
+# 假设 6 月实际病例数为 1200，7 月为 800
+new_cases = np.array([1200, 800], dtype=np.float32)
+
+for name in ["ETS", "ARIMA"]:
+    try:
+        inferer = vault.get(name)
+        updated = inferer.update(new_cases)
+        print(f"  {name:8s} update → {updated.ravel().round(0).astype(int)}")
+    except KeyError:
+        pass  # 模型不在 vault 中（依赖未安装）
+
+# ── 场景 3：从 vault 中挑选任一模型单独推理 ────────────────
 best_name = vault.best("R2")
-print(f"最佳模型: {best_name}")
+print(f"\n最佳模型单独部署: {best_name}")
 
 inferer = vault.get(best_name)
-
 if inferer.paradigm == "ts":
-    forecast = inferer.forecast(steps=6)
-    print(f"未来 6 个月预测: {forecast.ravel().round(0).astype(int)}")
+    fc = inferer.forecast(6)
+    print(f"  forecast(6): {fc.ravel().round(0).astype(int)}")
 else:
-    new_data = bundle.train_df.tail(15).copy()[bundle.feature_names]
     pred = inferer.predict(new_data)
-    print(f"未来 3 个月预测: {pred[0, :, 0].round(0).astype(int)}")
+    print(f"  predict(15行 → 未来3月): {pred[0, :, 0].round(0).astype(int)}")
+
+# 保存 vault（增量更新后）
+vault.save("/tmp/dengue_vault/")
 ```
 
 ---
