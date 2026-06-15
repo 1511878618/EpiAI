@@ -197,6 +197,7 @@ plt.show()
 ## 7. 生产部署模拟
 
 用留出的 12 个月真实数据模拟生产环境逐月 feed。
+初始化时，将训练数据全部加载到 `data_table` 中，这样窗口模型和时序模型都有完整的历史可查。
 
 ```python
 runtime = DeploymentRuntime(
@@ -205,13 +206,16 @@ runtime = DeploymentRuntime(
     time_unit="MS",
     strict=True,
 )
-# 训练数据最后一条的时间
+# 将全部训练数据载入 data_table（含 transforms=None 时的原始值）
+runtime.data_table = df_train.copy()
 runtime._train_end_time = df_train["time"].iloc[-1]
+print(f"训练数据: {len(runtime.data_table)} 行")
 print(f"训练结束: {runtime._train_end_time.date()}")
 print(f"部署开始: {df_deploy['time'].iloc[0].date()}")
+print(f"窗口模型需要: {bundle.lookback} 行历史 ✅ data_table 已满足")
 
 # ── 逐月 feed 留出的真实数据 ──
-history = []  # 记录每次 predict 的结果
+history = []
 
 for i in range(len(df_deploy)):
     row = df_deploy.iloc[i]
@@ -225,7 +229,6 @@ for i in range(len(df_deploy)):
     month_label = row["time"].strftime("%Y-%m")
     actual = int(row["cases"])
 
-    # 记录每个模型的预测
     record = {"month": month_label, "actual": actual}
     for name, r in result.items():
         if "error" not in r:
