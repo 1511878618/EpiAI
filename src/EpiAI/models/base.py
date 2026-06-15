@@ -106,6 +106,7 @@ class TorchMixin(BaseForecaster):
         self.eval()
         with torch.no_grad():
             x_t = torch.tensor(x, dtype=torch.float32)
+            x_t = x_t.to(next(self.parameters()).device)
             pred = self.forward(x_t)
             return pred.cpu().numpy()
 

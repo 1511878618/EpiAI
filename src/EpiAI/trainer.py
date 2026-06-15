@@ -138,17 +138,22 @@ class EpiAITrainer:
 
         model = self.model.to(device)
         loss_fn = self.loss or nn.MSELoss()
+
+        # Split optimizer_config into AdamW params vs training config
+        _opt_keys = {"lr", "weight_decay", "betas", "eps", "amsgrad"}
+        _opt_kw = {k: v for k, v in self.optimizer_config.items() if k in _opt_keys}
         optimizer = torch.optim.AdamW(
-            model.parameters(), **self.optimizer_config
+            model.parameters(), **_opt_kw if _opt_kw else {"lr": 1e-3}
         )
         early_stopper = self._make_early_stopper()
 
+        batch_size = self.optimizer_config.get("batch_size", 32)
         train_loader = DataLoader(
             TensorDataset(
                 torch.tensor(bundle.train_x, dtype=torch.float32),
                 torch.tensor(bundle.train_y, dtype=torch.float32),
             ),
-            batch_size=self.optimizer_config.get("batch_size", 32),
+            batch_size=batch_size,
             shuffle=True,
         )
         val_loader = DataLoader(
