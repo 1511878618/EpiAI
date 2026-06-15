@@ -162,6 +162,9 @@ class ForecastPipeline:
 
         # ---- 2. Fit transforms on train, apply to all ----
         if self.transforms is not None:
+            original_feature_cols = set(data.feature_cols)
+            original_all_cols = set(data.df.columns)
+
             self.transforms.fit(
                 train_df,
                 target_cols=data.target_cols,
@@ -173,6 +176,31 @@ class ForecastPipeline:
             if test_df is not None:
                 test_df = self.transforms.transform(test_df)
 
+            # Resolve actual feature columns after transforms:
+            #   original feature cols that still exist
+            #   + any NEW numeric columns added by transforms
+            #   - time / entity / target columns
+            _exclude = set(data.target_cols)
+            if data.time_col in train_df.columns:
+                _exclude.add(data.time_col)
+            if data.entity_col and data.entity_col in train_df.columns:
+                _exclude.add(data.entity_col)
+
+            current_numeric = set(
+                train_df.select_dtypes(include=[np.number]).columns
+            )
+            resolved_feature_cols = [
+                c for c in train_df.columns
+                if c in current_numeric
+                and c not in _exclude
+                and (
+                    c in original_feature_cols       # kept from original
+                    or c not in original_all_cols     # new column from a transform
+                )
+            ]
+        else:
+            resolved_feature_cols = data.feature_cols
+
         # ---- 3. Windowing (optional) ----
         if self.window is None:
             # Return DataFrames directly (no windowing)
@@ -182,18 +210,19 @@ class ForecastPipeline:
                 train_df=train_df,
                 val_df=val_df,
                 test_df=test_df,
+                feature_cols=resolved_feature_cols,
                 transforms=self.transforms,
             )
 
         train_w = self.window.apply(
             train_df, target_cols=data.target_cols,
-            feature_cols=data.feature_cols,
+            feature_cols=resolved_feature_cols,
             entity_col=data.entity_col,
         )
         val_w = (
             self.window.apply(
                 val_df, target_cols=data.target_cols,
-                feature_cols=data.feature_cols,
+                feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
             if val_df is not None
@@ -208,7 +237,7 @@ class ForecastPipeline:
         test_w = (
             self.window.apply(
                 test_df, target_cols=data.target_cols,
-                feature_cols=data.feature_cols,
+                feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
             if test_df is not None
@@ -312,6 +341,7 @@ def _bundle_from_dfs(
     train_df: pd.DataFrame,
     val_df: Optional[pd.DataFrame],
     test_df: Optional[pd.DataFrame],
+    feature_cols: List[str],
     transforms: Optional[Compose],
 ) -> PipelineBundle:
     """Create a PipelineBundle with DataFrame output (no windowing)."""
@@ -322,7 +352,7 @@ def _bundle_from_dfs(
         arr = df[cols].values.astype(np.float32)
         return arr.reshape(arr.shape[0], 1, arr.shape[1])  # (N, 1, D)
 
-    feat = data.feature_cols
+    feat = feature_cols
     tgt = data.target_cols
 
     return PipelineBundle(
