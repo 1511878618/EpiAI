@@ -214,35 +214,41 @@ print(f"训练结束: {runtime._train_end_time.date()}")
 print(f"部署开始: {df_deploy['time'].iloc[0].date()}")
 print(f"窗口模型需要: {bundle.lookback} 行历史 ✅ data_table 已满足")
 
+# ── 初始预测（基于训练数据，预测部署期的第一个月） ──
+prev_preds = {}
+print("\n初始预测（基于训练数据）：")
+for name, inferer in vault.models.items():
+    if inferer.paradigm == "ts":
+        raw = inferer.forecast(1)
+        prev_preds[name] = float(np.asarray(raw).ravel()[0])
+    else:
+        x_df = df_train.tail(inferer.lookback)[inferer.feature_names]
+        raw = inferer.predict(x_df)
+        prev_preds[name] = float(raw[0, 0, 0])
+    target_month = df_deploy.iloc[0]["time"].strftime("%Y-%m")
+    print(f"  {name}: 预测{target_month}={prev_preds[name]:.0f}")
+
 # ── 逐月 feed 留出的真实数据 ──
 history = []
-prev_preds = {}  # 上一轮 feed 对本月（即当前 feed 月份）的预测
 
 for i in range(len(df_deploy)):
     row = df_deploy.iloc[i]
     month_label = row["time"].strftime("%Y-%m")
     actual = int(row["cases"])
 
-    # 记录：本月实际值 vs 上一轮 feed 对本月的预测
+    # 记录：本月实际值 vs 上期预测
     record = {"month": month_label, "actual": actual}
-    if i > 0:
-        for name in prev_preds:
-            record[name] = prev_preds[name]
-    else:
-        for name in results:
-            record[name] = None  # 首次 feed 无上一期预测
+    for name in prev_preds:
+        record[name] = prev_preds[name]
     history.append(record)
 
     # 打印
     print(f"  {month_label}: 实报={actual:5d}", end="")
-    if i > 0:
-        for name in prev_preds:
-            print(f"  {name}预测={prev_preds[name]:6.0f}", end="")
-    else:
-        print(f"  (首次 feed, 无上期对比)", end="")
+    for name in prev_preds:
+        print(f"  {name}预测={prev_preds[name]:6.0f}", end="")
     print()
 
-    # feed 本月数据，产出下月预测
+    # feed 本月数据 → 更新 prev_preds（预测下月）
     new_data = pd.DataFrame({
         "time": [row["time"].strftime("%Y-%m-%d")],
         "cases": [row["cases"]],
@@ -267,8 +273,7 @@ plt.plot(range(len(df_hist)), df_hist["actual"], "o-", color="black",
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for (name, r), color in zip(results.items(), colors):
     if name in df_hist.columns:
-        valid = df_hist[name].dropna()
-        plt.plot(valid.index, valid, "s--", label=name,
+        plt.plot(range(len(df_hist)), df_hist[name], "s--", label=name,
                  color=color, alpha=0.6, markersize=4)
 
 plt.xticks(range(len(df_hist)), df_hist["month"], rotation=45)
