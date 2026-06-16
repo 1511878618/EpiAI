@@ -13,6 +13,7 @@
 - 自回归场景 `feature_cols ∩ target_cols` 时特征列为空
 
 ### 新增
+- `PipelineBundle.get_y_series_inverse()` / `get_X_series_inverse()` — 惰性逆变换，不污染 bundle 状态
 - `DeploymentRuntime.update_model()` TS 模型显式更新接口
 - CI: `.github/workflows/pytest.yml`
 - `CONTRIBUTING.md`、`.pre-commit-config.yaml`

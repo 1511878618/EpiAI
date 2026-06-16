@@ -66,8 +66,10 @@ bundle = ForecastPipeline(
 | `val_x/y` | `(N, L, D)` / `(N, H, T)` | 验证窗口 |
 | `test_x/y` | `(N, L, D)` / `(N, H, T)` | 测试窗口 |
 | `train/val/test_df` | `DataFrame` | 变换后的原始序列 |
-| `get_y_series(split)` | `ndarray` | TS 模型用的原始 y |
-| `get_X_series(split)` | `ndarray` | TS 模型用的原始 X |
+| `get_y_series(split)` | `ndarray` | 变换空间 y（TS 模型用） |
+| `get_X_series(split)` | `ndarray` | 变换空间 X |
+| `get_y_series_inverse(split)` | `ndarray` | 原始空间 y（绘图/展示用） |
+| `get_X_series_inverse(split)` | `ndarray` | 原始空间 X |
 | `lookback` / `horizon` | `int` | 窗口参数 |
 | `n_features` / `n_targets` | `int` | 维度信息 |
 
