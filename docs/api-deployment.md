@@ -1,163 +1,132 @@
-# DeploymentRuntime 使用说明
+# DeploymentRuntime API
 
-> 只需要知道四件事：模型从哪里来、历史数据怎么放、喂什么数据、吐出什么结果。
-
----
-
-## 1. 模型从哪里来
-
-训练好的模型存放在一个 **vault 目录**中，`DeploymentRuntime` 启动时加载它。
+## 初始化
 
 ```python
 from EpiAI import ModelVault, DeploymentRuntime
 
-vault = ModelVault.load("/path/to/vault/")       # ← 别人训练好给你的
+vault = ModelVault.load("/path/to/vault/")
 runtime = DeploymentRuntime(vault, time_col="time", time_unit="MS")
+runtime.data_table = pd.read_csv("/path/to/history.csv")
 ```
 
-vault 目录结构：
+**参数**
+
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `vault` | `ModelVault` | — | `ModelVault.load()` 加载的模型库 |
+| `time_col` | `str` | `"time"` | 数据中的时间列名 |
+| `time_unit` | `str` | `"MS"` | 时间单位：`MS`(月) / `D`(日) / `h`(时) |
+| `strict` | `bool` | `True` | `True`=时间不连续报错, `False`=仅警告 |
+
+**模型来源**：训练好的模型文件放在 vault 目录中：
+
 ```
 vault/
-├── manifest.json       # 有哪些模型、各自的指标
+├── manifest.json
 ├── RF/
-│   └── model.zip       # 单个模型
+│   └── model.zip
 └── ETS/
     └── model.zip
 ```
 
----
+**历史数据**：`runtime.data_table` 是全部历史数据的 DataFrame，格式：
 
-## 2. 历史数据怎么存放
-
-`DeploymentRuntime` 内部有一张 **data_table**，存全部历史数据。启动时从 CSV 加载：
-
-```python
-runtime.data_table = pd.read_csv("history.csv")   # ← 载入历史
 ```
-
-history.csv 格式：
-```csv
-time,cases
-2024-01,500
-2024-02,300
-...
-2026-03,1200
+time       cases
+2024-01    500
+2024-02    300
+...        ...
+2026-03    1200
 ```
-
-`data_table` 会随着每次 feed 自动增长，无需手动管理。
 
 ---
 
-## 3. 喂什么数据（feed 的输入）
+## feed()
 
-每月调用一次 `feed()`，传入当月的新数据：
+每月调用一次，传入当月数据，返回全部模型的预测。
 
 ```python
-new_row = pd.DataFrame({
+new_data = pd.DataFrame({
     "time": ["2026-04-01"],
     "cases": [1500],
 })
-
-result = runtime.feed(new_row)
+result = runtime.feed(new_data)
 ```
 
-**输入格式要求：**
+**输入**
 
-| 要求 | 说明 |
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `time` | `str` | `"YYYY-MM-DD"` 格式，必须连续 |
+| 其他列 | 同训练数据 | 模型需要的特征/目标列 |
+
+时间连续性规则：
+
+| 情况 | 行为 |
 |------|------|
-| 列名 | 必须和训练数据一致（如 `time`、`cases`） |
-| `time` | 时间值，格式 `"YYYY-MM-DD"` |
-| 其他列 | 模型需要的特征列（如 `cases`、`temp` 等） |
-| 行数 | 通常 1 行（每月一条） |
-| 时间连续性 | 上个月是 `2026-03`，本月必须是 `2026-04`，不能跳、不能重 |
+| 上月 `2026-03`，传入 `2026-04` | ✅ 正常 |
+| 上月 `2026-03`，传入 `2026-05` | ❌ 抛 `TimeGapError` |
+| 已传 `2026-04`，再次传入 `2026-04` | ❌ 抛 `TimeOrderError` |
 
-**时间连续性检查：**
-
-| 情况 | 结果 |
-|------|------|
-| 上月 `2026-03`，新数据 `2026-04` | ✅ 正常 |
-| 上月 `2026-03`，新数据 `2026-05` | ❌ `TimeGapError`（跳了一个月） |
-| 上月 `2026-03`，新数据 `2026-03` | ❌ `TimeOrderError`（重复） |
-| 不想报错，只想警告 | 初始化设 `strict=False` |
-
----
-
-## 4. 吐出什么结果（feed 的输出）
+**输出**
 
 ```python
 {
     "RF": {
-        "time":  ["2026-05", "2026-06", "2026-07"],      # 未来 3 个月
-        "pred": [      1043,       1144,       1376],      # 对应的预测值
+        "time":  ["2026-05", "2026-06", "2026-07"],   # 未来 3 个月
+        "pred": [      1043,       1144,       1376],   # 预测值
     },
     "ETS": {
         "time":  ["2026-05", "2026-06", "2026-07"],
         "pred": [      1106,       1365,       1016],
     },
-    # 某个模型出错时：
     "ARIMA": {
-        "error": "Model was fitted with X, so X_future must be provided.",
+        "error": "..."   # 模型出错时有 error 字段
     },
 }
 ```
 
 | 字段 | 说明 |
 |------|------|
-| `time` | 预测对应的时间标签，`["YYYY-MM", ...]` |
-| `pred` | 预测值，长度 = horizon（训练时设定，通常 3 或 6） |
-| `pred[0]` | **下一个月**的预测值 |
-| `pred[1]` | 下两个月的预测值 |
+| `time` | 预测对应的时间，`["YYYY-MM", ...]` |
+| `pred` | 预测值数组，`pred[0]`=下月，`pred[1]`=下下月 |
 | `error` | 模型出错时的错误信息 |
 
 ---
 
-## 5. 完整流程（从启动到每月调用）
-
-### 首次启动（只做一次）
+## 完整流程
 
 ```python
-from EpiAI import ModelVault, DeploymentRuntime
-
-# 加载模型
+# 1. 加载模型（部署时做一次）
 vault = ModelVault.load("/path/to/vault/")
-
-# 初始化运行时
-runtime = DeploymentRuntime(vault, time_col="time", time_unit="MS")
-
-# 载入历史数据
+runtime = DeploymentRuntime(vault, time_col="time")
 runtime.data_table = pd.read_csv("/path/to/history.csv")
-```
 
-### 每月调用（重复执行）
+# 2. 每月收到新数据后执行
+def on_new_data(time_str: str, cases: float):
+    row = pd.DataFrame({"time": [time_str], "cases": [cases]})
+    result = runtime.feed(row)
 
-```python
-# 收到新数据 → feed
-new_data = pd.DataFrame({
-    "time": ["2026-04-01"],
-    "cases": [1500],
-})
-
-result = runtime.feed(new_data)
-
-# 解析结果
-for name, r in result.items():
-    if "error" not in r:
-        months = r["time"]          # 时间标签列表
-        values = r["pred"]          # 预测值列表
-        next_month = values[0]      # 下个月预测值
+    for name, r in result.items():
+        if "error" not in r:
+            print(f"{name}: next month = {r['pred'][0]:.0f}")
+    return result
 ```
 
 ---
 
-## 6. 数据流向图
+## save()
+
+```python
+runtime.save("/path/to/runtime/")
+```
+
+输出目录：
 
 ```
-训练阶段（模型开发者）：
-  数据 → ForecastPipeline → EpiAITrainer → ModelVault.save("/path/to/vault/")
-
-部署阶段（你）：
-  vault = ModelVault.load("/path/to/vault/")          ← 模型
-  runtime.data_table = history.csv                    ← 历史数据
-  result = runtime.feed(new_data)                     ← 每月新数据
-  result["RF"]["pred"][0]                             ← 下个月预测值
+runtime/
+├── runtime_meta.json
+├── data_table.parquet    # 或 data_table.csv（无 pyarrow 时）
+└── vault/
 ```
