@@ -41,27 +41,47 @@ from .transforms import SlidingWindow, WindowArrays
 class PipelineBundle:
     """Everything produced by a full pipeline run.
 
-    Attributes
-    ----------
-    data : TimeSeriesData
-        The original loaded data.
-    split : SplitResult
-        Train/val/test indices.
-    train_x : np.ndarray  — ``(n_windows, lookback, n_features)``
-    train_y : np.ndarray  — ``(n_windows, horizon, n_targets)``
-    val_x : np.ndarray
-    val_y : np.ndarray
-    test_x : np.ndarray
-    test_y : np.ndarray
-    feature_names : list of str
-    target_names : list of str
-    transforms : list of Transform or None
-        The transform pipeline that was applied (for inverse).
-    train_df : pd.DataFrame or None
-        Transformed (or original) training DataFrame, **not windowed**.
-        Used by TimeSeries (ARIMA/ETS) models that consume raw sequences.
-    val_df : pd.DataFrame or None
-    test_df : pd.DataFrame or None
+    .. rubric:: Windowed data (transform space, for model training/eval)
+
+    ==========  =================================================
+    ``train_x``  ``(n_windows, lookback, n_features)``
+    ``train_y``  ``(n_windows, horizon, n_targets)``
+    ``val_x``
+    ``val_y``
+    ``test_x``
+    ``test_y``
+    ==========  =================================================
+
+    .. rubric:: Flat DataFrames (transform space, for TS models)
+
+    =============  ==============================================
+    ``train_df``   Transformed training DataFrame (not windowed).
+    ``val_df``
+    ``test_df``
+    =============  ==============================================
+
+    .. rubric:: Metadata
+
+    ================  ============================================
+    ``feature_names``  List of input feature column names.
+    ``target_names``   List of target column names.
+    ``transforms``     Fitted ``Compose`` (or ``None``).
+    ================  ============================================
+
+    .. rubric:: Convenience properties
+
+    ``n_train``  ``n_val``  ``n_test``  ``lookback``
+    ``horizon``  ``n_features``  ``n_targets``
+
+    .. rubric:: Raw series access (flat, transform space)
+
+    ``get_y_series(split)``   y in transform space  — for TS models.
+    ``get_X_series(split)``   X in transform space.
+
+    .. rubric:: Raw series access (flat, original space)
+
+    ``get_y_series_inverse(split)``   y back in observation units.
+    ``get_X_series_inverse(split)``   X back in observation units.
     """
 
     data: TimeSeriesData
@@ -120,6 +140,17 @@ class PipelineBundle:
         if df is None:
             raise ValueError(f"No {split}_df available; pipeline may not have saved it.")
         return df[self.feature_names].values.astype(np.float32)
+
+    def get_X_series_inverse(self, split: str = "train") -> np.ndarray:
+        """Return the inverse-transformed raw feature series ``(T, n_features)``."""
+        x = self.get_X_series(split).copy()
+        if self.transforms is None:
+            return x
+        for i, fn in enumerate(self.feature_names):
+            inv_series = pd.Series(x[:, i], name=fn)
+            inv_df = self.transforms.inverse(inv_series.to_frame())
+            x[:, i] = inv_df[fn].values
+        return x
 
     @property
     def n_train(self) -> int:
