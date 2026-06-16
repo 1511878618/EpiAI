@@ -77,7 +77,7 @@ bundle = ForecastPipeline(
     loader=CsvLoader(time_col="time", target_cols="cases",
                      feature_cols="cases"),
     split=TimeSplit(train_ratio=0.7, val_ratio=0.15),
-    transforms=None,
+    transforms=Compose([StandardScaler(columns=["cases"])]),
     window=SlidingWindow(lookback=12, horizon=3),
 ).run("/tmp/dengue_train.csv")
 

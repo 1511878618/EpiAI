@@ -358,20 +358,13 @@ def inverse_predictions(
     predictions = predictions.copy()
     try:
         for i, tn in enumerate(target_names):
-            col_pred = f"{tn}_pred"
-            inv_df = pd.DataFrame(
-                np.column_stack([predictions[:, 0, i]] * 2),
-                columns=[tn, col_pred],
-            )
-            inv_df = transforms.inverse(inv_df)
-            predictions[:, 0, i] = inv_df[col_pred].values
+            inv_series = pd.Series(predictions[:, 0, i], name=tn)
+            inv_df = transforms.inverse(inv_series.to_frame())
+            predictions[:, 0, i] = inv_df[tn].values
 
             if y_true is not None:
-                inv_y = pd.DataFrame(
-                    np.column_stack([y_true[:, i]] * 2),
-                    columns=[tn, col_pred],
-                )
-                inv_y = transforms.inverse(inv_y)
+                inv_series = pd.Series(y_true[:, i], name=tn)
+                inv_y = transforms.inverse(inv_series.to_frame())
                 y_true[:, i] = inv_y[tn].values
     except Exception:
         pass  # fall back to raw predictions if inverse fails
