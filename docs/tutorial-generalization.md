@@ -19,9 +19,9 @@ from EpiAI.models import sklearn_models, ts_models
 from EpiAI.models import torch_models
 
 from EpiAI.dataset import (
-    ForecastPipeline, CsvLoader, TimeSplit, EntitySplit,
-    Compose, StandardScaler, DateFeatures, FeatureLag,
-    SlidingWindow,
+    ForecastPipeline, CsvLoader, TimeSplit,
+    Compose, StandardScaler, DateFeatures,
+    SlidingWindow, EntityTimeSplit,
 )
 from EpiAI.models.registry import get, list_models
 from EpiAI.trainer import EpiAITrainer
@@ -70,22 +70,30 @@ df[df["province"].isin(unseen_provinces)].to_csv("/tmp/unseen.csv", index=False)
 ---
 
 ## 3. 数据管道（已见城市）
+## 3. 数据管道（已见城市）
 
-使用 `EntitySplit` 按城市拆分，确保训练/验证/测试集不混合同一城市的时序。
+使用 `EntityTimeSplit` 按城市+时间拆分，确保每个城市各自按时间比例划分训练/验证/测试。
 
 ```python
-# 对已见城市：70% 时间用于训练，后 30% 用于测试
+df_seen = pd.read_csv("/tmp/seen.csv")
+df_seen["time"] = pd.to_datetime(df_seen[TIME_COL])
+
+# 为每个已见城市计算时间分界点
+split_map = {}
+for city in seen_provinces:
+    city_df = df_seen[df_seen["province"] == city].sort_values("time")
+    n = len(city_df)
+    train_end = city_df.iloc[int(n * 0.7)]["time"]
+    val_end = city_df.iloc[int(n * 0.85)]["time"]
+    split_map[city] = (str(train_end.date()), str(val_end.date()))
+
 bundle = ForecastPipeline(
     loader=CsvLoader(time_col=TIME_COL, target_cols=TARGET,
                      feature_cols=FEATURES, entity_col="province"),
-    split=EntityTimeSplit(        # 按实体+时间拆分
-        train_ratio=0.7, val_ratio=0.15, test_ratio=0.15,
-        entity_col="province",
-    ),
+    split=EntityTimeSplit(split_map=split_map),
     transforms=Compose([
         StandardScaler(columns=FEATURES),
         DateFeatures(time_col=TIME_COL, features=["month"]),
-        FeatureLag(columns=["登革热"], lags=[1, 2, 3, 6, 12]),
     ]),
     window=SlidingWindow(lookback=12, horizon=3),
 ).run("/tmp/seen.csv")
@@ -229,53 +237,33 @@ for name in results:
 ## 8. 可视化
 
 ```python
-fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+# 对比：已见城市 vs 未见城市的 R²
+seen_names = [name for name in results]
+fig, ax = plt.subplots(figsize=(10, 5))
 
-# Left: seen city future prediction
-all_time = bundle.train_df[TIME_COL].tolist() + bundle.test_df[TIME_COL].tolist()
-y_all = np.concatenate([bundle.get_y_series("train").ravel(),
-                        bundle.get_y_series("test").ravel()])
+x = np.arange(len(seen_names))
+width = 0.35
 
-# 取其中一个已见城市的测试时段（通过实体列筛选）
-test_mask = bundle.test_df["province"] == seen_provinces[0]
-test_time = bundle.test_df[TIME_COL][test_mask].values
-test_actual = bundle.test_df[TARGET][test_mask].values
+seen_r2s = [results[n].metrics.iloc[0]["R2"] for n in seen_names]
+unseen_r2s = [results_unseen.get(n, {}).get("R2", 0) for n in seen_names]
 
-# Right: unseen city prediction
-unseen_city = unseen_provinces[0]
-city_df = df_unseen[df_unseen["province"] == unseen_city].reset_index(drop=True)
+bars1 = ax.bar(x - width/2, seen_r2s, width, label="已见城市（未来时段）",
+               color="steelblue", alpha=0.85)
+bars2 = ax.bar(x + width/2, unseen_r2s, width, label="未见城市（零样本）",
+               color="coral", alpha=0.85)
 
-for ax, title in zip(axes, [f"已见城市 — {seen_provinces[0]} 未来预测",
-                              f"未见城市 — {unseen_city} 零样本预测"]):
-    ax.set_title(title, fontsize=13, fontweight="bold")
-    ax.set_xlabel("时间"); ax.set_ylabel("登革热病例数"); ax.grid(alpha=0.3)
+ax.set_ylabel("R²"); ax.set_title("跨城市泛化能力对比", fontsize=14, fontweight="bold")
+ax.set_xticks(x); ax.set_xticklabels(seen_names)
+ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
+ax.legend(fontsize=10); ax.grid(axis="y", alpha=0.3)
 
-# 已见城市
-axes[0].plot(test_time, test_actual, "o-", color="black", linewidth=2, label="实际")
-for (name, r), color in zip(results.items(), plt.cm.tab10(np.linspace(0, 1, len(results)))):
-    preds = r.predictions[:, 0, 0]
-    m = r.metrics.iloc[0]["R2"]
-    # 按实体匹配预测
-    axes[0].plot(test_time[:len(preds)], preds, "s--",
-                 label=f"{name} (R²={m:.3f})", color=color, alpha=0.6)
-axes[0].legend(fontsize=8, ncol=2); axes[0].tick_params(axis="x", rotation=45)
+for bar in bars1:
+    ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
+            f"{bar.get_height():.2f}", ha="center", fontsize=8)
+for bar in bars2:
+    ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
+            f"{bar.get_height():.2f}", ha="center", fontsize=8)
 
-# 未见城市
-y_actual_unseen = city_df[TARGET].values
-axes[1].plot(city_df[TIME_COL], y_actual_unseen, "-", color="black", alpha=0.4, label="实际")
-
-colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
-for idx, (name, r) in enumerate(results.items()):
-    inferer = InferencePipeline.from_train_result(r)
-    pred = inferer.predict(city_df)
-    pred_vals = pred[:, 0, 0]
-    pred_time = city_df[TIME_COL].values[bundle.lookback:][:len(pred_vals)]
-
-    r2 = results_unseen.get(name, {}).get("R2", float("nan"))
-    axes[1].plot(pred_time, pred_vals, "s--",
-                 label=f"{name} (R²={r2:.3f})", color=colors[idx], alpha=0.6)
-
-axes[1].legend(fontsize=8, ncol=2); axes[1].tick_params(axis="x", rotation=45)
 plt.tight_layout(); plt.savefig("/tmp/generalization.png", dpi=150); plt.show()
 ```
 
