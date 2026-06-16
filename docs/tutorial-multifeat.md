@@ -101,7 +101,8 @@ print(f"实际特征数 (含变换后): {bundle.n_features}")
 ```python
 results = {}
 
-for name in ["MLP", "LSTM"]:
+for name in ["MLP", "LSTM", "CNN", "CNN-LSTM", "ResNet", "TCN",
+              "Transformer", "DLinear", "Autoformer", "TimesNet"]:
     try:
         model = get(name)(input_dim=bundle.n_features, lookback=12,
                           horizon=3, target_dim=1)
@@ -117,15 +118,21 @@ for name in ["MLP", "LSTM"]:
 ### 4.2 机器学习（Sklearn）
 
 ```python
-for name, kwargs in [
-    ("RF",  {"n_estimators": 200, "max_depth": 10, "random_state": 42}),
-    ("XGB", {"n_estimators": 200, "random_state": 42}),
-    ("SVR", {"kernel": "rbf", "C": 1.0}),
-]:
+for name in ["RF", "XGB", "LGBM", "SVR", "GLM", "TabPFN"]:
     try:
-        param_key = {"RF": "rf_params", "XGB": "xgb_params", "SVR": "svm_params"}[name]
+        params = {
+            "RF":    {"n_estimators": 200, "max_depth": 10, "random_state": 42},
+            "XGB":   {"n_estimators": 200, "random_state": 42},
+            "LGBM":  {"n_estimators": 200, "random_state": 42, "verbose": -1},
+            "SVR":   {"kernel": "rbf", "C": 1.0},
+            "GLM":   {},
+            "TabPFN": {},
+        }
+        param_key = {"RF": "rf_params", "XGB": "xgb_params", "LGBM": "lgbm_params",
+                     "SVR": "svm_params", "GLM": "glm_params", "TabPFN": "tabpfn_params"}
         model = get(name)(input_dim=bundle.n_features, lookback=12,
-                          horizon=3, target_dim=1, **{param_key: kwargs})
+                          horizon=3, target_dim=1,
+                          **{param_key[name]: params[name]})
         r = EpiAITrainer(model=model, verbose=False).fit(bundle)
         results[name] = r
         m = r.metrics.iloc[0]
