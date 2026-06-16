@@ -96,6 +96,24 @@ class PipelineBundle:
             raise ValueError(f"No {split}_df available; pipeline may not have saved it.")
         return df[self.target_names].values.astype(np.float32)
 
+    def get_y_series_inverse(self, split: str = "train") -> np.ndarray:
+        """Return the inverse-transformed raw time series ``(T, n_targets)``.
+
+        Unlike ``get_y_series()`` (which returns values in transform space),
+        this returns values in original (observation) space by calling
+        ``transforms.inverse()`` on each target column.
+
+        Safe for repeated calls — never modifies internal state.
+        """
+        y = self.get_y_series(split).copy()
+        if self.transforms is None:
+            return y
+        for i, tn in enumerate(self.target_names):
+            inv_series = pd.Series(y[:, i], name=tn)
+            inv_df = self.transforms.inverse(inv_series.to_frame())
+            y[:, i] = inv_df[tn].values
+        return y
+
     def get_X_series(self, split: str = "train") -> np.ndarray:
         """Return the transformed raw feature series ``(T, n_features)``."""
         df = getattr(self, f"{split}_df")

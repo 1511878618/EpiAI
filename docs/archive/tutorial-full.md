@@ -164,12 +164,10 @@ print(f"\n最佳模型: {best_name}")
 ## 6. 可视化：历史与预测
 
 ```python
-# 用原始数据（未经变换）作为实际值
-df_orig = pd.read_csv("/tmp/dengue_train.csv")
-df_orig["time"] = pd.to_datetime(df_orig["time"])
-
+# 实际值（逆变换回到原始尺度）
 all_time = bundle.train_df["time"].tolist() + bundle.test_df["time"].tolist()
-y_all = df_orig["cases"].values
+y_all = np.concatenate([bundle.get_y_series_inverse("train").ravel(),
+                        bundle.get_y_series_inverse("test").ravel()])
 
 plt.figure(figsize=(14, 7))
 plt.plot(all_time[:len(bundle.train_df)], y_all[:len(bundle.train_df)],
