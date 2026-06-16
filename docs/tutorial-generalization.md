@@ -129,7 +129,8 @@ for name in ["RF", "XGB", "LGBM", "SVR", "GLM", "TabPFN"]:
                           **{param_key[name]: params[name]})
         r = EpiAITrainer(model=model, verbose=False).fit(bundle)
         results[name] = r
-        print(f"  ✅ {name:10s}  R²={r.metrics.iloc[0]['R2']:.3f}")
+        m = r.metrics.iloc[0]
+        print(f"  ✅ {name:10s}  MAE={m['MAE']:.0f}  r={m['PearsonR']:.3f}")
     except Exception as e:
         print(f"  ❌ {name}: {str(e)[:50]}")
 
@@ -142,7 +143,8 @@ for name in ["MLP", "LSTM", "CNN", "CNN-LSTM", "ResNet", "TCN",
         r = EpiAITrainer(model=model, verbose=False,
                          optimizer_config={"max_epochs": 20}).fit(bundle)
         results[name] = r
-        print(f"  ✅ {name:10s}  R²={r.metrics.iloc[0]['R2']:.3f}")
+        m = r.metrics.iloc[0]
+        print(f"  ✅ {name:10s}  MAE={m['MAE']:.0f}  r={m['PearsonR']:.3f}")
     except Exception as e:
         print(f"  ❌ {name}: {str(e)[:50]}")
 
@@ -190,7 +192,7 @@ def evaluate_on_city(inferer, city_df, lookback, target_col):
     return y_true, y_pred
 
 from EpiAI import InferencePipeline
-from sklearn.metrics import r2_score, mean_absolute_error
+from sklearn.metrics import mean_absolute_error
 
 # 加载未见城市数据
 df_unseen = pd.read_csv("/tmp/unseen.csv")
@@ -209,7 +211,6 @@ for name in results:
             continue
         y_true, y_pred = evaluate_on_city(inferer, city_df, bundle.lookback, TARGET)
         city_results[name][city] = {
-            "R2": r2_score(y_true, y_pred),
             "MAE": mean_absolute_error(y_true, y_pred),
         }
 
@@ -224,26 +225,25 @@ for name in results:
     all_true = np.concatenate(all_true)
     all_pred = np.concatenate(all_pred)
     results_unseen[name] = {
-        "R2": r2_score(all_true, all_pred),
         "MAE": mean_absolute_error(all_true, all_pred),
     }
 
 # 打印按城市细分的评估结果
-print("\n未见城市零样本评估（按城市）：")
+print("\n未见城市零样本评估（按城市 MAE）：")
 print(f"{'模型':10s}", end="")
 for city in unseen_provinces:
-    print(f"  {city:4s} R²", end="")
+    print(f"  {city:4s} MAE", end="")
 print()
 for name in results:
     print(f"{name:10s}", end="")
     for city in unseen_provinces:
         v = city_results[name].get(city, {})
-        print(f"  {v.get('R2', float('nan')):>6.3f}", end="")
+        print(f"  {v.get('MAE', float('nan')):>7.0f}", end="")
     print()
 
-print(f"\n{'模型':10s}  {'汇总 R²':8s}  {'汇总 MAE':8s}")
+print(f"\n{'模型':10s}  {'汇总 MAE':8s}")
 for name in results:
-    print(f"{name:10s}  {results_unseen[name]['R2']:>8.3f}  {results_unseen[name]['MAE']:>8.0f}")
+    print(f"{name:10s}  {results_unseen[name]['MAE']:>8.0f}")
 ```
 
 ---
@@ -269,9 +269,9 @@ colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for idx, (name, r) in enumerate(results.items()):
     inferer = InferencePipeline.from_train_result(r)
     y_true, y_pred = evaluate_on_city(inferer, city_df, bundle.lookback, TARGET)
-    r2 = city_results[name].get(example_city, {}).get("R2", float("nan"))
+    mae = city_results[name].get(example_city, {}).get("MAE", float("nan"))
     pred_time = city_df[TIME_COL].values[bundle.lookback:][:len(y_pred)]
-    ax.plot(pred_time, y_pred, "s--", label=f"{name} (R²={r2:.3f})",
+    ax.plot(pred_time, y_pred, "s--", label=f"{name} (MAE={mae:.0f})",
             color=colors[idx], alpha=0.55, markersize=3, linewidth=1.2)
 
 ax.set_title(f"未见城市「{example_city}」零样本预测效果", fontsize=14, fontweight="bold")
@@ -281,7 +281,7 @@ ax.tick_params(axis="x", rotation=45)
 plt.tight_layout(); plt.savefig("/tmp/generalization_city.png", dpi=150); plt.show()
 ```
 
-### 7.2 泛化能力对比柱状图
+### 7.2 泛化能力对比柱状图（MAE）
 
 ```python
 seen_names = [n for n in results]
@@ -289,26 +289,25 @@ fig, ax = plt.subplots(figsize=(10, 5))
 x = np.arange(len(seen_names))
 width = 0.35
 
-seen_r2s = [results[n].metrics.iloc[0]["R2"] for n in seen_names]
-unseen_r2s = [results_unseen.get(n, {}).get("R2", 0) for n in seen_names]
+seen_maes = [results[n].metrics.iloc[0]["MAE"] for n in seen_names]
+unseen_maes = [results_unseen.get(n, {}).get("MAE", 0) for n in seen_names]
 
-bars1 = ax.bar(x - width/2, seen_r2s, width, label="已见城市（未来时段）",
+bars1 = ax.bar(x - width/2, seen_maes, width, label="已见城市（未来时段）",
                color="steelblue", alpha=0.85)
-bars2 = ax.bar(x + width/2, unseen_r2s, width, label="未见城市（零样本）",
+bars2 = ax.bar(x + width/2, unseen_maes, width, label="未见城市（零样本）",
                color="coral", alpha=0.85)
 
-ax.set_ylabel("R²"); ax.set_title("跨城市泛化能力对比", fontsize=14, fontweight="bold")
+ax.set_ylabel("MAE"); ax.set_title("跨城市泛化能力对比（MAE 越低越好）",
+              fontsize=14, fontweight="bold")
 ax.set_xticks(x); ax.set_xticklabels(seen_names)
-ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
 ax.legend(fontsize=10); ax.grid(axis="y", alpha=0.3)
-ax.set_ylim(min(min(seen_r2s), min(unseen_r2s), 0) - 0.2, 1.05)
 
 for bar in bars1:
-    ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
-            f"{bar.get_height():.2f}", ha="center", fontsize=8)
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
+            f"{bar.get_height():.0f}", ha="center", fontsize=8)
 for bar in bars2:
-    ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
-            f"{bar.get_height():.2f}", ha="center", fontsize=8)
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
+            f"{bar.get_height():.0f}", ha="center", fontsize=8)
 
 plt.tight_layout(); plt.savefig("/tmp/generalization_bar.png", dpi=150); plt.show()
 ```
@@ -320,19 +319,18 @@ plt.tight_layout(); plt.savefig("/tmp/generalization_bar.png", dpi=150); plt.sho
 ```python
 print("=== 核心发现 ===")
 print()
-print(f"已见城市测试集 (n={bundle.n_test} 窗口):")
+print(f"已见城市测试集 (n={bundle.n_test} 窗口, MAE):")
 for name in results:
-    r2 = results[name].metrics.iloc[0]["R2"]
-    print(f"  {name}: R²={r2:.3f}")
+    m = results[name].metrics.iloc[0]
+    print(f"  {name}: MAE={m['MAE']:.0f}  r={m['PearsonR']:.3f}")
 
-print(f"\n未见城市零样本 (n={len(unseen_provinces)} 城市):")
+print(f"\n未见城市零样本 (n={len(unseen_provinces)} 城市, MAE):")
 for name in results:
     if name in results_unseen:
-        r2 = results_unseen[name]["R2"]
         mae = results_unseen[name]["MAE"]
-        print(f"  {name}: R²={r2:.3f}  MAE={mae:.0f}")
+        print(f"  {name}: MAE={mae:.0f}")
 ```
 
-> 模型在已见城市的未来时段表现较好，原因是可以利用训练数据中学到的
-> 季节性和气候-发病关系。对于未见城市，RF 等非参数模型通常比深度学习
-> 模型泛化更稳定，因为决策树对特征的单调关系假设更少。
+> 多城市预测中，MAE 和 PearsonR 比 R² 更能反映模型真实表现。
+> 原因是登革热数据零值多、爆发偶发，测试集内同一城市的病例数变化幅度
+> 可能很小，导致 R² 的分母（ss_tot）趋近于零。
