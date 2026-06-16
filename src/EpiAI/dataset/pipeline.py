@@ -209,11 +209,16 @@ class ForecastPipeline:
             #   original feature cols that still exist
             #   + any NEW numeric columns added by transforms
             #   - time / entity / target columns
+            #   Exception: if a column is both feature AND target (autoregressive),
+            #   it stays as a feature — past target values are valid input.
             _exclude = set(data.target_cols)
             if data.time_col in train_df.columns:
                 _exclude.add(data.time_col)
             if data.entity_col and data.entity_col in train_df.columns:
                 _exclude.add(data.entity_col)
+            # Don't exclude columns that were explicitly requested as features
+            # even if they're also targets (autoregressive overlap).
+            _exclude -= set(data.feature_cols or [])
 
             current_numeric = set(
                 train_df.select_dtypes(include=[np.number]).columns
