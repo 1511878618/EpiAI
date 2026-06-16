@@ -176,21 +176,19 @@ def evaluate_on_city(inferer, city_df, lookback, target_col):
 
     逻辑
     ----
-    inferer.predict(city_df) 内部做了：
-      city_df (N 行) → transform → SlidingWindow(N-L-H+1 窗口) → predict
-      → 逆变换 → (M, H, T) 数组
-
-    取 pred[:, 0, :]（每窗口第一步）作为该时间点的 1 步预测值。
-    每个预测对应的时间点 = 窗口终点 = lookback + i。
+    inferer.predict(city_df) 内部：
+      apply_features_only 创建 N - lookback + 1 个窗口
+      但仅 N - lookback 个窗口的第1步预测落在数据范围内。
 
     返回
     ----
     y_true : ndarray, (M,)    真实值
     y_pred : ndarray, (M,)    预测值
     """
-    pred = inferer.predict(city_df)                # (M, horizon, target_dim)
-    y_pred = pred[:, 0, 0]                         # 第一步预测
-    y_true = city_df[target_col].values[lookback:][:len(y_pred)]
+    pred = inferer.predict(city_df)                # (M', horizon, target_dim)
+    n_valid = len(city_df) - lookback              # 有效首步预测数
+    y_pred = pred[:n_valid, 0, 0]                  # 仅取有效部分
+    y_true = city_df[target_col].values[lookback:][:n_valid]
     return y_true, y_pred
 
 from EpiAI import InferencePipeline
