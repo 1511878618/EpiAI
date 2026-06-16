@@ -189,15 +189,12 @@ print(f"\n最佳模型: {best_name}")
 流行病学风格绘图：以黑色粗线突出实际病例轨迹，用纵向分界线划分训练/验证/测试期。
 
 ```python
-# 时间轴：训练 + 验证 + 测试
-all_time = (bundle.train_df[TIME_COL].tolist()
-            + bundle.val_df[TIME_COL].tolist()
-            + bundle.test_df[TIME_COL].tolist())
-y_all = np.concatenate([
-    bundle.get_y_series("train").ravel(),
-    bundle.get_y_series("val").ravel(),
-    bundle.get_y_series("test").ravel(),
-])
+# 用原始数据（未经变换）作为实际值
+df_orig = pd.read_csv("/tmp/guangdong.csv")
+df_orig[TIME_COL] = pd.to_datetime(df_orig[TIME_COL])
+
+all_time = df_orig[TIME_COL].tolist()
+y_all = df_orig[TARGET].values                     # 原始尺度
 
 # 分界位置
 n_train = len(bundle.train_df)
