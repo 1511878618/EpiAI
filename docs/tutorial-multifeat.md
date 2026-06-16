@@ -180,36 +180,60 @@ print(f"\n最佳模型: {best_name}")
 
 ## 6. 预测可视化
 
+流行病学风格绘图：以黑色粗线突出实际病例轨迹，用纵向分界线划分训练/验证/测试期。
+
 ```python
-all_time = bundle.train_df[TIME_COL].tolist() + bundle.test_df[TIME_COL].tolist()
-y_all = np.concatenate([bundle.get_y_series("train").ravel(),
-                        bundle.get_y_series("test").ravel()])
+# 时间轴：训练 + 验证 + 测试
+all_time = (bundle.train_df[TIME_COL].tolist()
+            + bundle.val_df[TIME_COL].tolist()
+            + bundle.test_df[TIME_COL].tolist())
+y_all = np.concatenate([
+    bundle.get_y_series("train").ravel(),
+    bundle.get_y_series("val").ravel(),
+    bundle.get_y_series("test").ravel(),
+])
 
-plt.figure(figsize=(14, 7))
+# 分界位置
+n_train = len(bundle.train_df)
+n_val = len(bundle.val_df)
+val_start = all_time[n_train]
+test_start = all_time[n_train + n_val]
 
-# 训练集
-plt.plot(all_time[:len(bundle.train_df)], y_all[:len(bundle.train_df)],
-         "-", label="训练集", color="#bdc3c7", alpha=0.5)
+fig, ax = plt.subplots(figsize=(16, 6))
 
-# 测试集实际
-test_start = len(bundle.train_df)
-test_time = all_time[test_start:]
-test_actual = bundle.get_y_series("test").ravel()
-plt.plot(test_time, test_actual, "o-", label="实际值", color="black", linewidth=2)
+# ── 背景区域标注 ──
+ax.axvspan(all_time[0], val_start, alpha=0.05, color="blue", label="训练期")
+ax.axvspan(val_start, test_start, alpha=0.08, color="orange", label="验证期")
+ax.axvspan(test_start, all_time[-1], alpha=0.12, color="red", label="测试期")
 
-# 模型预测
+# ── 分割线 ──
+for x, label in [(val_start, "验证"), (test_start, "测试")]:
+    ax.axvline(x=x, color="gray", linestyle=":", alpha=0.6)
+    ax.text(x, ax.get_ylim()[1] * 0.98, label,
+            ha="center", fontsize=9, color="gray",
+            bbox=dict(facecolor="white", edgecolor="none", pad=1))
+
+# ── 实际值（粗黑线，突出轨迹）─
+ax.plot(all_time, y_all, "-", color="black", linewidth=2.5, alpha=0.9,
+        label="实际值", zorder=5)
+ax.plot(all_time, y_all, "o", color="black", markersize=3, alpha=0.6, zorder=5)
+
+# ── 模型预测值（半透明，淡化）─
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
 for (name, r), color in zip(results.items(), colors):
     preds = r.predictions[:, 0, 0]
     n = len(preds)
+    t = all_time[n_train + n_val:][:n]  # 测试集时段
     m = r.metrics.iloc[0]
-    plt.plot(test_time[:n], preds, "s--",
-             label=f"{name}  (R²={m['R2']:.3f})", color=color, alpha=0.6, markersize=4)
+    ax.plot(t, preds, "s--",
+            label=f"{name}  (R²={m['R2']:.3f})",
+            color=color, alpha=0.55, markersize=4, linewidth=1.2)
 
-plt.legend(fontsize=9, ncol=3)
-plt.title("广东省登革热 — 多特征预测对比", fontsize=14)
-plt.ylabel("病例数"); plt.xlabel("时间"); plt.grid(alpha=0.3)
-plt.xticks(rotation=45); plt.tight_layout()
+ax.legend(fontsize=9, ncol=4, loc="upper left")
+ax.set_title("广东省登革热月发病数 — 多特征模型预测对比", fontsize=14, fontweight="bold")
+ax.set_ylabel("病例数"); ax.set_xlabel("时间"); ax.grid(alpha=0.15, linestyle=":")
+ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+plt.tight_layout()
 plt.savefig("/tmp/guangdong_all_models.png", dpi=150)
 plt.show()
 ```
