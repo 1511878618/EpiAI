@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-# data/
+data/
 # C extensions
 *.so
 __pycache__
@@ -106,3 +106,9 @@ logs/
 tmp/
 temp/
 *.tmp
+*.bak
+*.npy
+*.parquet
+
+# node (hermes-agent lsp)
+node_modules/
