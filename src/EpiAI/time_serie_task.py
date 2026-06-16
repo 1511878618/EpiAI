@@ -14,6 +14,7 @@ import torch
 from EpiAI.losses import *
 import EpiAI.models.tabular_models as EpiAI_tabular_models
 import EpiAI.models.torch_models as EpiAI_torch_models
+import EpiAI.models.arima_models as EpiAI_arima_models 
 
 from .train import TrainConfig, fit_model, get_device
 from .dataset.time_seris_task_data import SimpleForecastDataModule
@@ -137,11 +138,21 @@ def train_prediction_model(
             model_config=model_config,
         )
 
+    if modelname in EpiAI_arima_models.__dict__:
+        return train_arima_model(
+            data=data,
+            Case_col=Case_col,
+            Feature_col=Feature_col,
+            Time_col=Time_col,
+            model_config=model_config,
+        )
+
     # ---- 都不匹配 ----
     raise ValueError(
         f"Model {modelname!r} not found. "
         f"Available torch models: {list(EpiAI_torch_models.__dict__.keys())} | "
-        f"tabular models: {list(EpiAI_tabular_models.__dict__.keys())}"
+        f"tabular models: {list(EpiAI_tabular_models.__dict__.keys())} | "
+        f"ARIMA models:{list(EpiAI_arima_models.__dict__.keys())} "
     )
 
 
@@ -871,3 +882,186 @@ def train_tabular_model(
         "metrics_df": metrics_df,
         "datamodule": datamodule,
     }
+
+
+
+
+
+def train_arima_model(
+    data: pd.DataFrame,
+    Case_col: Union[str, List[str]],
+    Feature_col: Union[str, List[str]],
+    Time_col: str,
+    model_config: Dict[str, Any],
+):
+    """
+    Train ARIMA/SARIMAX model with rolling-origin prediction.
+
+    与 torch/tabular 不同：
+    - 不切割滑窗，使用完整时间序列
+    - train 上 auto_arima 搜索最优阶
+    - test 上 rolling-origin 滚动预测
+    - 支持 ARIMAX（外生变量）
+    """
+
+    # ============================================================
+    # 1. Normalize column inputs
+    # ============================================================
+    model_config = copy.deepcopy(model_config)
+
+    if isinstance(Case_col, str):
+        target_feature_names = [Case_col]
+    else:
+        target_feature_names = list(Case_col)
+
+    if isinstance(Feature_col, str):
+        used_features = [Feature_col]
+    else:
+        used_features = list(Feature_col)
+
+    if Time_col not in data.columns:
+        raise ValueError(f"Time_col={Time_col!r} not found in data.columns.")
+
+    missing_targets = [c for c in target_feature_names if c not in data.columns]
+    if missing_targets:
+        raise ValueError(f"Target columns not found in data: {missing_targets}")
+
+    missing_features = [c for c in used_features if c not in data.columns]
+    if missing_features:
+        raise ValueError(f"Feature columns not found in data: {missing_features}")
+
+    # ARIMA 目前只支持单变量 target（target_dim=1）
+    if len(target_feature_names) != 1:
+        raise ValueError(
+            f"ARIMA only supports target_dim=1, got target_dim={len(target_feature_names)}. "
+            f"Target columns: {target_feature_names}"
+        )
+
+    target_col = target_feature_names[0]
+
+    # ============================================================
+    # 2. Resolve model config
+    # ============================================================
+    model_type = model_config.get("modelType", None)
+    if model_type is None:
+        raise ValueError("model_config['modelType'] is required.")
+    modelname = f"{model_type}Forecaster"
+    params = copy.deepcopy(model_config.get("params", {}))
+    training_config_user = copy.deepcopy(model_config.get("training_config", {}))
+
+    # ============================================================
+    # 3. Defaults
+    # ============================================================
+    training_config_default = dict(
+        train_val_test_ratio=(8, 0, 2),
+        fillna_method="zero",
+    )
+
+    training_config = {**training_config_default, **training_config_user}
+
+    train_val_test_ratio = training_config["train_val_test_ratio"]
+    fillna_method = training_config["fillna_method"]
+
+    # ============================================================
+    # 4. Resolve params
+    # ============================================================
+    horizon = params.pop("horizon", 3)
+    rolling_window_size = params.pop("rolling_window_size", None)
+
+    # ============================================================
+    # 5. Prepare data (完整序列，不切滑窗)
+    # ============================================================
+    selected_cols = list(
+        dict.fromkeys([Time_col] + target_feature_names + used_features)
+    )
+
+    data = data[selected_cols].copy()
+    data[Time_col] = pd.to_datetime(data[Time_col])
+    data = data.sort_values(Time_col).reset_index(drop=True)
+
+    # 缺失值填充
+    if fillna_method == "zero":
+        data = data.fillna(0)
+    elif fillna_method == "ffill":
+        data = data.ffill().bfill()
+    elif fillna_method == "mean":
+        data = data.fillna(data.mean())
+
+    # 按时间顺序分成 train / test（val 只是占位符，不实际使用）
+    total_len = len(data)
+    train_ratio, _, test_ratio = train_val_test_ratio  # 只取第三个值
+    total_ratio = train_ratio  + test_ratio
+    test_len = int(total_len * test_ratio / total_ratio)
+
+
+    train_end = total_len - test_len
+
+    train_data = data.iloc[:train_end]
+    test_data = data.iloc[train_end:]
+
+    y_train = train_data[target_col].values.astype(float)
+    y_test = test_data[target_col].values.astype(float)
+
+    # ARIMAX: 如果 used_features 不包含 target 列，则作为外生变量
+    X_features = [c for c in used_features if c != target_col]
+    X_train = train_data[X_features].values.astype(float) if X_features else None
+    X_test = test_data[X_features].values.astype(float) if X_features else None
+    # ============================================================
+    # 6. Build and fit model
+    # ============================================================
+    # 将 rolling_window_size 显式传给构造函数
+    if rolling_window_size is not None:
+        params["rolling_window_size"] = rolling_window_size
+    
+    if modelname not in EpiAI_arima_models.__dict__:         # ← 新增校验
+        raise ValueError(
+            f"Model {modelname!r} not found in EpiAI_arima_models. "
+            f"Available models: {list(EpiAI_arima_models.__dict__.keys())}"
+        )
+
+    model = EpiAI_arima_models.__dict__[modelname](
+        horizon=horizon,
+        **params,
+    )
+
+
+    model.fit(y_train, X_train=X_train)
+    # ============================================================
+    # 7. Predict (rolling-origin on test)
+    # ============================================================
+    pred_df = model.predict(y_test, X_test=X_test, return_df=True)
+
+    eval_data = test_data.copy()
+    eval_data = eval_data.reset_index(drop=True)
+    eval_data[f"prediction_{target_col}"] = pred_df["y_pred"].values
+
+    # ============================================================
+    # 8. 合并回完整数据
+    # ============================================================
+    merged_df = data.copy()
+
+    # 将预测结果合并到原始时间索引
+    time_map = dict(zip(eval_data[Time_col], eval_data[f"prediction_{target_col}"]))
+    merged_df[f"prediction_{target_col}"] = merged_df[Time_col].map(time_map)
+
+    # 标记 Train / Test（全部都是 Train，不标注 Val）
+    merged_df["Type"] = None
+    merged_df.loc[merged_df.index < train_end, "Type"] = "Train"
+    merged_df.loc[merged_df.index >= train_end, "Type"] = "Test"
+
+
+    # ============================================================
+    # 9. Evaluate metrics
+    # ============================================================
+    metrics_df = _evaluate_prediction_metrics(
+        df=merged_df,
+        target_feature_names=target_feature_names,
+    )
+
+    return {
+        "model": model,
+        "result_df": merged_df.reset_index(drop=False),
+        "metrics_df": metrics_df,
+        "datamodule": None,  # ARIMA 不使用 DataModule
+    }
+

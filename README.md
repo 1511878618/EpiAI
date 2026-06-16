@@ -178,12 +178,19 @@ list_models("ts")           # 仅时间序列
 
 | 文档 | 说明 |
 |------|------|
-| [架构设计](docs/architecture-v3.md) | 模型接口、注册系统、训练器设计 |
-| [数据管道](docs/data-pipeline-v2.md) | 数据加载、拆分、变换、滑窗详细说明 |
-| [部署设计](docs/deployment-design.md) | 生产部署、时间连续性、统一数据表设计 |
-| [快速教程](tutorial/tutorial-dengue.ipynb) | 登革热快速体验：三族模型对比 + 最佳部署 |
+| [概述](docs/index.md) | 功能清单、模型一览、文档索引 |
+| [快速上手](docs/quickstart.md) | 5 分钟跑通完整流程 |
+| [框架架构](docs/architecture.md) | 整体分层、设计原则、文件结构 |
+| [数据管道](docs/data-pipeline.md) | 加载 / 拆分 / 变换 / 滑窗 |
+| [数据模块指南](docs/guides/dataset.md) | 数据功能详解 + 添加新 Transform / Split |
+| [模型模块指南](docs/guides/models.md) | 注册系统 + 添加新模型 |
+| [训练模块指南](docs/guides/training.md) | 训练器 + 添加新范式 |
+| [部署模块指南](docs/guides/deployment.md) | 推理 / 部署 / 扩展 |
+| [部署 API](docs/api-deployment.md) | DeploymentRuntime 接口说明 |
+| [快速教程](tutorial/tutorial-dengue.ipynb) | 登革热快速体验 |
 | [完整教程](tutorial/tutorial-full.ipynb) | 完整流程：留数据 → 训练 → 逐月 feed → 对比 |
-| [更新日志](CHANGELOG.md) | 版本历史与变更记录 |
+| [更新日志](CHANGELOG.md) | 版本历史 |
+| [贡献指南](CONTRIBUTING.md) | 开发环境、代码风格、PR 流程 |
 
 ---
 

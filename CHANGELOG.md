@@ -1,5 +1,20 @@
 # 更新日志
 
+## [v0.5.0] — 2026-06-16
+
+### 新增
+- 文档体系重构：index / quickstart / architecture / data-pipeline + 4 篇模块指南
+- 每篇指南包含功能介绍 + 扩展指南（如何加新 Transform / Split / 模型 / 范式 / 部署后端）
+
+### 变更
+- docs/ 目录重组，旧文档移至 docs/archive/
+- `.pre-commit-config.yaml`：black + ruff + trailing-whitespace
+- `CONTRIBUTING.md`：开发环境、代码风格、PR 流程
+- CI：`.github/workflows/pytest.yml`（Python 3.10–3.12）
+- `MANIFEST.in`：打包数据文件
+- 测试文件从 `test_phaseN` 重命名为功能名
+- `tutorial/tutorial-dengue-1.ipynb` 移除（重复文件）
+
 ## [v0.4.0] — 2026-06-15
 
 ### 新增
