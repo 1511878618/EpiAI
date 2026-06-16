@@ -20,7 +20,7 @@ from EpiAI.models import torch_models          # 需要 PyTorch
 
 from EpiAI.dataset import (
     ForecastPipeline, CsvLoader, TimeSplit, Compose,
-    StandardScaler, DateFeatures, FeatureLag,
+    StandardScaler, DateFeatures,
     SlidingWindow,
 )
 from EpiAI.models.registry import get, list_models
@@ -84,7 +84,6 @@ bundle = ForecastPipeline(
     transforms=Compose([
         StandardScaler(columns=FEATURES),              # 所有特征标准化
         DateFeatures(time_col=TIME_COL, features=["month"]),  # 月份特征
-        FeatureLag(columns=["登革热"], lags=[1, 2, 3, 12]),   # 登革热滞后特征
     ]),
     window=SlidingWindow(lookback=12, horizon=3),
 ).run("/tmp/guangdong.csv")
