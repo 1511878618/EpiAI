@@ -199,55 +199,95 @@ df_unseen = pd.read_csv("/tmp/unseen.csv")
 df_unseen[TIME_COL] = pd.to_datetime(df_unseen[TIME_COL])
 
 results_unseen = {}
+city_results = {}  # {city: {model: {"R2": ..., "MAE": ...}}}
 
 for name in results:
     inferer = InferencePipeline.from_train_result(results[name])
-    all_true, all_pred = [], []
+    city_results[name] = {}
 
     for city in unseen_provinces:
         city_df = df_unseen[df_unseen["province"] == city].reset_index(drop=True)
         if len(city_df) < bundle.lookback + 1:
             continue
         y_true, y_pred = evaluate_on_city(inferer, city_df, bundle.lookback, TARGET)
+        city_results[name][city] = {
+            "R2": r2_score(y_true, y_pred),
+            "MAE": mean_absolute_error(y_true, y_pred),
+        }
+
+    # 汇总（所有城市合并）
+    all_true, all_pred = [], []
+    for city in city_results[name]:
+        y_true, y_pred = evaluate_on_city(inferer,
+            df_unseen[df_unseen["province"] == city].reset_index(drop=True),
+            bundle.lookback, TARGET)
         all_true.append(y_true)
         all_pred.append(y_pred)
+    all_true = np.concatenate(all_true)
+    all_pred = np.concatenate(all_pred)
+    results_unseen[name] = {
+        "R2": r2_score(all_true, all_pred),
+        "MAE": mean_absolute_error(all_true, all_pred),
+    }
 
-    if all_true:
-        all_true = np.concatenate(all_true)
-        all_pred = np.concatenate(all_pred)
-        results_unseen[name] = {
-            "R2": r2_score(all_true, all_pred),
-            "MAE": mean_absolute_error(all_true, all_pred),
-        }
-        print(f"  {name:10s}  R²={results_unseen[name]['R2']:.3f}  "
-              f"MAE={results_unseen[name]['MAE']:.0f}")
-```
-
----
-
-## 7. 对比：已见 vs 未见城市
-
-```python
-print("\n表 2：泛化能力对比")
-print(f"{'模型':10s}  {'已见城市 R²':12s}  {'未见城市 R²':12s}  {'差距':8s}")
-print("-" * 45)
+# 打印按城市细分的评估结果
+print("\n未见城市零样本评估（按城市）：")
+print(f"{'模型':10s}", end="")
+for city in unseen_provinces:
+    print(f"  {city:4s} R²", end="")
+print()
 for name in results:
-    seen_r2 = results[name].metrics.iloc[0]["R2"]
-    unseen_r2 = results_unseen.get(name, {}).get("R2", float("nan"))
-    gap = seen_r2 - unseen_r2 if not np.isnan(unseen_r2) else float("nan")
-    print(f"{name:10s}  {seen_r2:>10.3f}      {unseen_r2:>8.3f}      {gap:>+.3f}" if not np.isnan(gap)
-          else f"{name:10s}  {seen_r2:>10.3f}      {'N/A':>8}      {'N/A':>8}")
+    print(f"{name:10s}", end="")
+    for city in unseen_provinces:
+        v = city_results[name].get(city, {})
+        print(f"  {v.get('R2', float('nan')):>6.3f}", end="")
+    print()
+
+print(f"\n{'模型':10s}  {'汇总 R²':8s}  {'汇总 MAE':8s}")
+for name in results:
+    print(f"{name:10s}  {results_unseen[name]['R2']:>8.3f}  {results_unseen[name]['MAE']:>8.0f}")
 ```
 
 ---
 
-## 8. 可视化
+## 7. 可视化
+
+### 7.1 未见城市预测效果（以第一个未见城市为例）
+
+取其中一个未见城市的全部时段，绘制实际值（黑色粗线）和各模型的预测曲线。
 
 ```python
-# 对比：已见城市 vs 未见城市的 R²
-seen_names = [name for name in results]
-fig, ax = plt.subplots(figsize=(10, 5))
+example_city = unseen_provinces[0]
+city_df = df_unseen[df_unseen["province"] == example_city].reset_index(drop=True)
 
+fig, ax = plt.subplots(figsize=(16, 5))
+
+# 实际值（黑色粗线，突出轨迹）
+ax.plot(city_df[TIME_COL], city_df[TARGET], "-", color="black",
+        linewidth=2.5, alpha=0.9, label="实际值", zorder=5)
+
+# 各模型预测
+colors = plt.cm.tab10(np.linspace(0, 1, len(results)))
+for idx, (name, r) in enumerate(results.items()):
+    inferer = InferencePipeline.from_train_result(r)
+    y_true, y_pred = evaluate_on_city(inferer, city_df, bundle.lookback, TARGET)
+    r2 = city_results[name].get(example_city, {}).get("R2", float("nan"))
+    pred_time = city_df[TIME_COL].values[bundle.lookback:][:len(y_pred)]
+    ax.plot(pred_time, y_pred, "s--", label=f"{name} (R²={r2:.3f})",
+            color=colors[idx], alpha=0.55, markersize=3, linewidth=1.2)
+
+ax.set_title(f"未见城市「{example_city}」零样本预测效果", fontsize=14, fontweight="bold")
+ax.set_ylabel("登革热病例数"); ax.set_xlabel("时间"); ax.grid(alpha=0.15, linestyle=":")
+ax.legend(fontsize=9, ncol=4, loc="upper left")
+ax.tick_params(axis="x", rotation=45)
+plt.tight_layout(); plt.savefig("/tmp/generalization_city.png", dpi=150); plt.show()
+```
+
+### 7.2 泛化能力对比柱状图
+
+```python
+seen_names = [n for n in results]
+fig, ax = plt.subplots(figsize=(10, 5))
 x = np.arange(len(seen_names))
 width = 0.35
 
@@ -263,6 +303,7 @@ ax.set_ylabel("R²"); ax.set_title("跨城市泛化能力对比", fontsize=14, f
 ax.set_xticks(x); ax.set_xticklabels(seen_names)
 ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
 ax.legend(fontsize=10); ax.grid(axis="y", alpha=0.3)
+ax.set_ylim(min(min(seen_r2s), min(unseen_r2s), 0) - 0.2, 1.05)
 
 for bar in bars1:
     ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
@@ -271,12 +312,12 @@ for bar in bars2:
     ax.text(bar.get_x() + bar.get_width()/2, max(bar.get_height(), 0) + 0.02,
             f"{bar.get_height():.2f}", ha="center", fontsize=8)
 
-plt.tight_layout(); plt.savefig("/tmp/generalization.png", dpi=150); plt.show()
+plt.tight_layout(); plt.savefig("/tmp/generalization_bar.png", dpi=150); plt.show()
 ```
 
 ---
 
-## 9. 结论
+## 8. 结论
 
 ```python
 print("=== 核心发现 ===")
