@@ -261,7 +261,7 @@ class EpiAITrainer:
             y_true = bundle.get_y_series("test")[:n]
         else:
             # Window models: ground truth is test_y (same windowing)
-            y_true = bundle.test_y[:, 0, :]  # first horizon step only
+            y_true = bundle.test_y[:, 0, :].copy()  # first horizon step only
 
         # Inverse-transform using shared helper
         predictions = inverse_predictions(
