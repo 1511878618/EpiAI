@@ -166,51 +166,60 @@ print(vault.summary().to_string())
 
 ## 6. 在未见城市上评估（零样本泛化）
 
-将训练好的模型直接用于从未见过的城市，不做任何微调。
+将训练好的模型直接用于从未见过的城市。核心操作是**对整个城市的时间序列做滑窗预测，
+取每个窗口的第一步行预测作为该时间点的预测值**，然后与真实值对比。
 
 ```python
-# 对未见城市的全部数据做预测
-df_unseen = pd.read_csv("/tmp/unseen.csv")
-df_unseen[TIME_COL] = pd.to_datetime(df_unseen[TIME_COL])
+def evaluate_on_city(inferer, city_df, lookback, target_col):
+    """
+    对单个城市的完整时间序列做滑窗预测。
 
-# 获取每个已见城市最后一个训练时段的模型，用于预测未见城市
-# 实际会使用 bundle 中的测试数据进行评估（模型的 test_predictions）
-# 但对于未见城市，我们需要用 InferencePipeline 单独预测
+    逻辑
+    ----
+    inferer.predict(city_df) 内部做了：
+      city_df (N 行) → transform → SlidingWindow(N-L-H+1 窗口) → predict
+      → 逆变换 → (M, H, T) 数组
+
+    取 pred[:, 0, :]（每窗口第一步）作为该时间点的 1 步预测值。
+    每个预测对应的时间点 = 窗口终点 = lookback + i。
+
+    返回
+    ----
+    y_true : ndarray, (M,)    真实值
+    y_pred : ndarray, (M,)    预测值
+    """
+    pred = inferer.predict(city_df)                # (M, horizon, target_dim)
+    y_pred = pred[:, 0, 0]                         # 第一步预测
+    y_true = city_df[target_col].values[lookback:][:len(y_pred)]
+    return y_true, y_pred
 
 from EpiAI import InferencePipeline
+from sklearn.metrics import r2_score, mean_absolute_error
+
+# 加载未见城市数据
+df_unseen = pd.read_csv("/tmp/unseen.csv")
+df_unseen[TIME_COL] = pd.to_datetime(df_unseen[TIME_COL])
 
 results_unseen = {}
 
 for name in results:
     inferer = InferencePipeline.from_train_result(results[name])
-    preds_city = []
-    actuals_city = []
-    city_names = []
+    all_true, all_pred = [], []
 
     for city in unseen_provinces:
         city_df = df_unseen[df_unseen["province"] == city].reset_index(drop=True)
-        if len(city_df) < bundle.lookback:
+        if len(city_df) < bundle.lookback + 1:
             continue
+        y_true, y_pred = evaluate_on_city(inferer, city_df, bundle.lookback, TARGET)
+        all_true.append(y_true)
+        all_pred.append(y_pred)
 
-        # 用全部数据预测（模型从未见过这个城市）
-        pred = inferer.predict(city_df)
-
-        y_true_city = bundle.get_y_series("test")  # not applicable here
-        y_actual = city_df[TARGET].values[bundle.lookback:][:pred.shape[0]]
-
-        preds_city.append(pred[:, 0, 0])
-        actuals_city.append(y_actual)
-        city_names.extend([city] * pred.shape[0])
-
-    if preds_city:
-        all_preds = np.concatenate(preds_city)
-        all_actual = np.concatenate(actuals_city)
-
-        from sklearn.metrics import r2_score, mean_absolute_error
-
+    if all_true:
+        all_true = np.concatenate(all_true)
+        all_pred = np.concatenate(all_pred)
         results_unseen[name] = {
-            "R2": r2_score(all_actual, all_preds),
-            "MAE": mean_absolute_error(all_actual, all_preds),
+            "R2": r2_score(all_true, all_pred),
+            "MAE": mean_absolute_error(all_true, all_pred),
         }
         print(f"  {name:10s}  R²={results_unseen[name]['R2']:.3f}  "
               f"MAE={results_unseen[name]['MAE']:.0f}")
