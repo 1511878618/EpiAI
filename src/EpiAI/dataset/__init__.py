@@ -151,24 +151,25 @@ __all__ = [
     "WindowArrays",
     "ForecastPipeline",
     "PipelineBundle",
-    # ── Legacy pipeline (lazy) ──
-    "MultiTargetCityDatasetBuilder",
-    "DatasetConfig",
-    "DiseaseTensorData",
-    "CitySplitData",
-    "WindowedData",
-    "DatasetBundle",
-    "DatasetInspector",
-    "load_disease_tensor",
-    "TensorStandardScaler",
-    "normalize_split_data",
-    "CitySplitter",
-    "FeatureTaskBuilder",
-    "DimType",
-    "InputFeatureMode",
-    "SplitMode",
-    "shuffle_training_data",
-    "make_sliding_windows",
-    "flatten_city_windows_for_training",
-    "ForecastDataModule",
 ]
+
+
+def __getattr__(name):
+    """Lazy-load legacy names for backward compatibility."""
+    _legacy = {
+        "MultiTargetCityDatasetBuilder",
+        "DatasetConfig", "DiseaseTensorData", "CitySplitData",
+        "WindowedData", "DatasetBundle", "DatasetInspector",
+        "load_disease_tensor", "TensorStandardScaler",
+        "normalize_split_data", "CitySplitter", "FeatureTaskBuilder",
+        "DimType", "InputFeatureMode", "SplitMode",
+        "shuffle_training_data", "make_sliding_windows",
+        "flatten_city_windows_for_training", "ForecastDataModule",
+    }
+    if name in _legacy:
+        _load_legacy()
+        import sys
+        mod = sys.modules[__name__]
+        if hasattr(mod, name):
+            return getattr(mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

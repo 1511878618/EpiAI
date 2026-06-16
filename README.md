@@ -6,8 +6,9 @@
 # EpiAI — 传染病爆发预测框架
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![CI](https://github.com/xutingfeng/EpiAI/actions/workflows/pytest.yml/badge.svg)](https://github.com/xutingfeng/EpiAI/actions)
 
 **EpiAI** 是一个端到端的传染病爆发预测框架，支持深度学习、机器学习
 和传统时间序列模型。提供统一的数据管道、模型注册系统、训练入口、
