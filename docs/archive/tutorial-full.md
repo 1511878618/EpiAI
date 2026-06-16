@@ -164,16 +164,19 @@ print(f"\n最佳模型: {best_name}")
 ## 6. 可视化：历史与预测
 
 ```python
+# 用原始数据（未经变换）作为实际值
+df_orig = pd.read_csv("/tmp/dengue_train.csv")
+df_orig["time"] = pd.to_datetime(df_orig["time"])
+
 all_time = bundle.train_df["time"].tolist() + bundle.test_df["time"].tolist()
-y_all = np.concatenate([bundle.get_y_series("train").ravel(),
-                        bundle.get_y_series("test").ravel()])
+y_all = df_orig["cases"].values
 
 plt.figure(figsize=(14, 7))
 plt.plot(all_time[:len(bundle.train_df)], y_all[:len(bundle.train_df)],
          "-", label="训练集", color="#bdc3c7", alpha=0.5)
 test_start = len(bundle.train_df)
 test_time = all_time[test_start:]
-test_actual = bundle.get_y_series("test").ravel()
+test_actual = y_all[test_start:]
 plt.plot(test_time, test_actual, "o-", label="实际值", color="black", linewidth=2)
 
 colors = plt.cm.tab10(np.linspace(0, 1, len(results)))

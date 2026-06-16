@@ -1,5 +1,28 @@
 # 更新日志
 
+## [v0.6.0] — 2026-06-17
+
+### 修复
+- `inverse_predictions` 原地修改 `bundle.test_y` 导致重复运行 inf/NaN
+- `inverse_predictions` 列名不匹配导致 StandardScaler 逆变换无效
+- 预测值写到 `[:, -1, i]`（末步）而非 `[:, 0, i]`（首步）
+- 窗口未裁剪，`test_y[:,0,:]` 前 `context_len - lookback` 个值不对应 test_df
+- `DateFeatures` 无 `inverse` 阻断逆变换链
+- `Identity` 无 `inverse`，且 `transform(self, pd.DataFrame)` 参数名错误
+- 教程绘图中 `get_y_series()` 返回标准化值与预测值（原始尺度）不匹配
+- 自回归场景 `feature_cols ∩ target_cols` 时特征列为空
+
+### 新增
+- `DeploymentRuntime.update_model()` TS 模型显式更新接口
+- CI: `.github/workflows/pytest.yml`
+- `CONTRIBUTING.md`、`.pre-commit-config.yaml`
+- 文档重构：index / quickstart / architecture / data-pipeline + 4 篇模块指南
+
+### 变更
+- torch 改为可选依赖 `EpiAI[torch]`
+- 测试文件 `test_phaseN` → 功能名
+- pyproject.toml v0.5.0
+
 ## [v0.5.0] — 2026-06-16
 
 ### 新增
