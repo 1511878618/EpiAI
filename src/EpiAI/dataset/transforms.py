@@ -28,6 +28,9 @@ class Identity(Transform):
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
 
+    def inverse(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
 
 # ============================================================================
 # StandardScaler  —  (x - μ) / σ
@@ -386,6 +389,10 @@ class DateFeatures(Transform):
         if self.drop_original:
             df = df.drop(columns=[self.time_col])
 
+        return df
+
+    def inverse(self, df: pd.DataFrame) -> pd.DataFrame:
+        """DateFeatures adds columns that don't need inverse (no-op)."""
         return df
 
 
