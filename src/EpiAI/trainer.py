@@ -364,7 +364,7 @@ def inverse_predictions(
                 columns=[tn, col_pred],
             )
             inv_df = transforms.inverse(inv_df)
-            predictions[:, -1, i] = inv_df[col_pred].values
+            predictions[:, 0, i] = inv_df[col_pred].values
 
             if y_true is not None:
                 inv_y = pd.DataFrame(
