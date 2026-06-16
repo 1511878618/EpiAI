@@ -112,17 +112,30 @@ print(f"特征数: {bundle.n_features}")
 results = {}
 
 # ── Sklearn ──
-for name, kwargs in [("RF", {"n_estimators": 200, "max_depth": 10, "random_state": 42}),
-                      ("XGB", {"n_estimators": 200, "random_state": 42})]:
-    param_key = {"RF": "rf_params", "XGB": "xgb_params"}[name]
-    model = get(name)(input_dim=bundle.n_features, lookback=12,
-                      horizon=3, target_dim=1, **{param_key: kwargs})
-    r = EpiAITrainer(model=model, verbose=False).fit(bundle)
-    results[name] = r
-    print(f"  ✅ {name:10s}  R²={r.metrics.iloc[0]['R2']:.3f}")
+for name in ["RF", "XGB", "LGBM", "SVR", "GLM", "TabPFN"]:
+    try:
+        params = {
+            "RF":    {"n_estimators": 200, "max_depth": 10, "random_state": 42},
+            "XGB":   {"n_estimators": 200, "random_state": 42},
+            "LGBM":  {"n_estimators": 200, "random_state": 42, "verbose": -1},
+            "SVR":   {"kernel": "rbf", "C": 1.0},
+            "GLM":   {},
+            "TabPFN": {},
+        }
+        param_key = {"RF": "rf_params", "XGB": "xgb_params", "LGBM": "lgbm_params",
+                     "SVR": "svm_params", "GLM": "glm_params", "TabPFN": "tabpfn_params"}
+        model = get(name)(input_dim=bundle.n_features, lookback=12,
+                          horizon=3, target_dim=1,
+                          **{param_key[name]: params[name]})
+        r = EpiAITrainer(model=model, verbose=False).fit(bundle)
+        results[name] = r
+        print(f"  ✅ {name:10s}  R²={r.metrics.iloc[0]['R2']:.3f}")
+    except Exception as e:
+        print(f"  ❌ {name}: {str(e)[:50]}")
 
 # ── Torch ──
-for name in ["MLP", "LSTM"]:
+for name in ["MLP", "LSTM", "CNN", "CNN-LSTM", "ResNet", "TCN",
+              "Transformer", "DLinear", "Autoformer", "TimesNet"]:
     try:
         model = get(name)(input_dim=bundle.n_features, lookback=12,
                           horizon=3, target_dim=1)
@@ -133,22 +146,7 @@ for name in ["MLP", "LSTM"]:
     except Exception as e:
         print(f"  ❌ {name}: {str(e)[:50]}")
 
-# ── TS ──
-# 注意：TS 模型不支持多实体，这里仅作为基准
-try:
-    bundle_ts = ForecastPipeline(
-        loader=CsvLoader(time_col=TIME_COL, target_cols=TARGET,
-                         feature_cols=TARGET),
-        split=TimeSplit(train_ratio=0.7, val_ratio=0.15),
-        transforms=None,
-        window=SlidingWindow(lookback=12, horizon=3),
-    ).run("/tmp/seen.csv")  # 所有城市拼在一起，仅做参考
-    for name, kwargs in [("ETS", {"seasonal_periods": 12, "seasonal": "add", "trend": "add"})]:
-        r = EpiAITrainer(model=get(name)(**kwargs), verbose=False).fit(bundle_ts)
-        results[name] = r
-        print(f"  ✅ {name:10s}  R²={r.metrics.iloc[0]['R2']:.3f}")
-except Exception as e:
-    print(f"  ⚠️ TS 模型跳过: {str(e)[:60]}")
+print(f"\n已训练 {len(results)} 个非时序模型")
 ```
 
 ---
