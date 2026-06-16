@@ -187,7 +187,7 @@ list_models("ts")           # 仅时间序列
 | [训练模块指南](docs/guides/training.md) | 训练器 + 添加新范式 |
 | [部署模块指南](docs/guides/deployment.md) | 推理 / 部署 / 扩展 |
 | [部署 API](docs/api-deployment.md) | DeploymentRuntime 接口说明 |
-| [快速教程](tutorial/tutorial-dengue.ipynb) | 登革热快速体验 |
+| [快速教程](tutorial/tutorial-dengue.ipynb) | 登革热快速体验：三族模型对比 + 最佳部署 |
 | [完整教程](tutorial/tutorial-full.ipynb) | 完整流程：留数据 → 训练 → 逐月 feed → 对比 |
 | [更新日志](CHANGELOG.md) | 版本历史 |
 | [贡献指南](CONTRIBUTING.md) | 开发环境、代码风格、PR 流程 |

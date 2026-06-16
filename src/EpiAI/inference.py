@@ -731,6 +731,13 @@ class DeploymentRuntime:
                         f"First feed time {new_times[0]} does not follow "
                         f"train_end {self._train_end_time}. Expected {expected}.",
                     )
+            elif self.strict:
+                self._raise_or_warn(
+                    TimeGapError,
+                    "First feed: _train_end_time is not set. "
+                    "Set runtime._train_end_time = training_data['time'].iloc[-1] "
+                    "to enable time continuity checking.",
+                )
             return
 
         last = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
