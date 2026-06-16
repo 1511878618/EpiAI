@@ -267,6 +267,15 @@ class ForecastPipeline:
                 feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
+            # Trim windows whose first horizon step lands in the context
+            # (not in the actual val_df), so test_y[:,0,:] aligns to val_df[0].
+            _trim = context_len - self.window.lookback
+            if _trim > 0 and val_w.x.shape[0] > _trim:
+                val_w = WindowArrays(
+                    x=val_w.x[_trim:], y=val_w.y[_trim:],
+                    feature_names=val_w.feature_names,
+                    target_names=val_w.target_names,
+                )
         else:
             val_w = WindowArrays(
                 x=np.empty((0, train_w.x.shape[1], train_w.x.shape[2])),
@@ -284,6 +293,13 @@ class ForecastPipeline:
                 feature_cols=resolved_feature_cols,
                 entity_col=data.entity_col,
             )
+            _trim = context_len - self.window.lookback
+            if _trim > 0 and test_w.x.shape[0] > _trim:
+                test_w = WindowArrays(
+                    x=test_w.x[_trim:], y=test_w.y[_trim:],
+                    feature_names=test_w.feature_names,
+                    target_names=test_w.target_names,
+                )
         else:
             test_w = None
 
