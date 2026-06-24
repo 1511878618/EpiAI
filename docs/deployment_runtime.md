@@ -1,6 +1,6 @@
 # DeploymentRuntime — 生产部署运行时
 
-`DeploymentRuntime` 是 EpiAI 的生产部署组件，管理已训练模型的推理、数据更新和重新训练。
+`DeploymentRuntime` 是 EpiAI 的生产部署组件，管理已训练模型的推理、数据更新。
 
 ---
 
@@ -11,163 +11,137 @@
 ┌──────────┬────────┬────────┐ ┌──────┬──────┬──────┐
 │  train   │  val   │  test  │ │feed1 │feed2 │ ...  │ 时间→
 └──────────┴────────┴────────┘ └──────┴──────┴──────┘
-▲_train_end_time                ↑predict(目标时间点)
+▲data_table 末尾                ↑predict(horizon=12) 输出
 ```
 
-- **data_table**：维护全部历史观测数据（训练集 + 验证集 + 测试集 + 部署后新数据）
-- **vault**：包含所有已训练模型（窗口模型 + TS 模型）
-- **predict(target_time)**：对任意未来时间点统一查询各模型预测结果
+- **data_table**：存储全部历史观测数据，**原始尺度**（与训练时 CSV 一致）
+- **Transform 透明**：`InferencePipeline` 内部自动 `apply_transforms` → 模型推理 → `inverse_target`，用户只接触原始值
+- **TS 模型 gap 补齐**：`_last_ds` 到 data_table 末尾的 gap 通过 `forecast(gap+horizon)` 跳过，输出对齐
 
 ---
 
-## 核心 API
+## API 参考
 
-### `__init__(vault, time_col, time_unit, strict)`
+### `__init__(vault, time_col, time_unit, strict, data_table)`
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `vault` | `ModelVault` | 已训练的模型集合 |
-| `time_col` | `str` | 数据表中时间列的名称（默认 `"time"`） |
-| `time_unit` | `str` | pandas 时间频率别名（`"MS"` 月, `"D"` 日, 默认 `"MS"`） |
-| `strict` | `bool` | 是否严格检查时间连续性（默认 `True`） |
+| 参数 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `vault` | `ModelVault` | — | `ModelVault.load()` 或 `ModelVault.from_results()` |
+| `time_col` | `str` | `"time"` | 时间列名 |
+| `time_unit` | `str` | `"MS"` | `"MS"`(月), `"D"`(日) |
+| `strict` | `bool` | `True` | 时间不连续报错 |
+| `data_table` | `pd.DataFrame` | `None` | 初始历史数据（原始尺度） |
 
-### `predict(target_time) -> Dict[str, float | dict]`
+`_history_end_time` 自动从 `data_table` 末尾推断。
 
-预测指定时间点的值。
+---
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `target_time` | `str / datetime / pd.Timestamp` | 要预测的时间点 |
+### `predict(horizon=1) → pd.DataFrame`
 
-返回 `{模型名: 预测值}`，预测失败时值为 `{"error": "..."}`。
+预测未来 horizon 步，返回 时间×模型 表格。
 
-**各模型类型的处理方式：**
+```python
+# 默认：预测下 1 个月
+runtime.predict()
+# 输出:
+#            RF   ARIMA  Prophet  ...
+# 2026-05  1043    1106     989
 
-| 模型类型 | 预测逻辑 |
-|---------|---------|
-| **窗口模型** (RF/XGB/LSTM/CNN…) | 取 `data_table` 最后 L 行做 lookback → `model.predict(lookback)` |
-| **TS 模型** (ARIMA/Prophet/ETS…) | 从 `model._last_ds` forecast 到 `target_time` → 取该步的值 |
+# 预测 12 个月
+runtime.predict(horizon=12)
+```
 
-> 窗口模型预测未来时，`target_time` 不需要存在于 `data_table` 中。
-> 引擎会自动使用最近 L 行观测数据作为输入。
+| 模型类型 | 实现 |
+|---------|------|
+| 窗口模型 | `data_table` 最后 L 行 → `predict` → H 步 |
+| TS 模型 | `forecast(gap + horizon)` → 取最后 horizon 步 |
 
-### `predict_range(start_time, end_time) -> Dict[str, np.ndarray]`
+TS 模型的 gap 补齐：`forecast(gap + horizon) -> pred[-horizon:]`，保证所有模型时间对齐。
 
-批量预测时间范围内的每个时间点。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `start_time` | `str / datetime` | 起始时间 |
-| `end_time` | `str / datetime` | 结束时间 |
-
-返回 `{模型名: np.array([预测值, ...])}`。
+---
 
 ### `feed(new_data)`
 
-追加新的观测数据到 data_table（不触发预测）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `new_data` | `pd.DataFrame` | 包含 `time_col` 列和 feature/target 列的新数据 |
-
-- 自动检查时间连续性（按 `time_unit` 步长）
-- `strict=True` 时，时间不连续或乱序会抛出 `TimeGapError` / `TimeOrderError`
-- `strict=False` 时仅发出警告
-
-### `retrain_all()`
-
-用 data_table 中的全部数据重新训练所有模型并更新 vault。
-
-**前置条件**：每个 `InferencePipeline.model_config` 必须已正确设置：
+追加新观测到 data_table（不触发预测，不复位模型）。
 
 ```python
-for name, inferer in vault.models.items():
-    for disp, mname, kwargs in MODEL_DEFS:
-        if disp == name:
-            inferer.model_config = {
-                "register_name": mname,     # 注册名，用于 get(name)
-                "init_kwargs": kwargs,       # 创建模型时的参数字典
-            }
+runtime.feed(pd.DataFrame({"time": ["2026-05-01"], "cases": [1500]}))
 ```
-
-**各模型类型的重训逻辑：**
-
-| 模型类型 | 重训流程 |
-|---------|---------|
-| **窗口模型** | 用全部数据重建 `ForecastPipeline`（`train_ratio=1.0`）→ `EpiAITrainer.fit(bundle)` |
-| **TS 模型** | 取全量 y 序列 → `model.fit_sequence(y_full, dates=dates)` |
-
-重训后自动更新 `_train_end_time` 为 data_table 最后时间点。
-
-### `save(path)`
-
-持久化运行时状态到磁盘。
-
-```
-path/
-├── runtime_meta.json       # 元数据 (time_col, time_unit, train_end_time, …)
-├── data_table.parquet      # 历史观测数据（parquet / CSV fallback）
-└── vault/                  # 模型 vault（每模型子目录 + manifest.json）
-```
-
-### `load(path) -> DeploymentRuntime`
-
-从磁盘恢复运行时状态。
 
 ---
 
-## 属性
+### `update_ts(names=None)`
 
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| `vault` | `ModelVault` | 当前模型集合 |
-| `data_table` | `pd.DataFrame` | 历史观测数据表 |
-| `time_col` | `str` | 时间列名 |
-| `_train_end_time` | `pd.Timestamp / None` | 训练结束时间（部署起点） |
+用 data_table 中最近的数据重新拟合 TS 模型（滑动窗口）。
 
----
-
-## 快速开始
+保持原始训练数据量，窗口滑动到最新。适合 feed 后让 TS 模型赶上最新状态。
 
 ```python
-from EpiAI.inference import DeploymentRuntime, ModelVault
+runtime.feed(new_month)
+runtime.update_ts()
+runtime.predict(horizon=12)   # 此时 TS 模型从 data_table 末尾 forecast
+```
 
-# 1. 初始化 runtime，传入 vault 和全部历史数据
-runtime = DeploymentRuntime(vault=vault, time_col="time", time_unit="MS")
-runtime.data_table = history_df.copy()
-runtime._train_end_time = pd.to_datetime(history_df["time"].iloc[-1])
+内部流程：
+1. 从模型读取 `train_size_` / `_y_train` 确定窗口大小
+2. 从 data_table 取最近 N 行
+3. 通过 `inferer.transforms.transform()` 变换到模型空间
+4. 调用 `model.fit_sequence()` 重新拟合
+5. 更新 `_last_ds`
 
-# 2. 预测未来
-result = runtime.predict("2026-05-01")
-print(result["RF"])        # 窗口模型预测值
-print(result["Prophet"])   # TS 模型预测值
+---
 
-# 3. 批量预测
-results = runtime.predict_range("2026-05-01", "2026-10-01")
+### `save(path)` / `load(path)`
 
-# 4. 新数据到达
-runtime.feed(new_observations_df)
+持久化/加载运行时状态。
 
-# 5. 用全部数据重训
-for name, inferer in vault.models.items():
-    for disp, mname, kwargs in MODEL_DEFS:
-        if disp == name:
-            inferer.model_config = {"register_name": mname, "init_kwargs": kwargs}
-runtime.retrain_all()
-
-# 6. 持久化
-runtime.save("/path/to/runtime/")
-
-# 7. 恢复
-runtime = DeploymentRuntime.load("/path/to/runtime/")
+```
+runtime/
+├── runtime_meta.json
+├── data_table.parquet
+└── vault/
 ```
 
 ---
 
-## 错误类型
+## 完整示例
 
-| 异常 | 触发条件 |
-|------|---------|
-| `TimeGapError` | feed 的数据与 data_table 之间存在时间跳跃 |
-| `TimeOrderError` | feed 的数据时间戳 <= data_table 最后时间 |
-| `BufferError` | data_table 行数不足窗口模型的 lookback |
+```python
+from EpiAI.inference import ModelVault, DeploymentRuntime
+from EpiAI.risk import RiskScorer, WarningRule
+import pandas as pd
+
+# 加载
+vault = ModelVault.load("/path/to/vault/")
+history = pd.read_csv("/path/to/history.csv")
+runtime = DeploymentRuntime(vault=vault, data_table=history)
+
+# 预测
+preds = runtime.predict(horizon=12)
+print(preds)
+
+# feed + update
+runtime.feed(pd.DataFrame({"time": ["2026-05-01"], "cases": [1600]}))
+runtime.update_ts()
+preds = runtime.predict(horizon=6)
+
+# 风险预警
+scorer = RiskScorer(method="quantile").fit(runtime.data_table)
+risk_df = scorer.score_df(preds)
+rule = WarningRule(ensemble="max")
+report = rule.evaluate(risk_df)
+print(rule.report(report))
+
+# 持久化
+runtime.save("/tmp/my_runtime/")
+```
+
+---
+
+## 注意
+
+| 事项 | 说明 |
+|------|------|
+| **data_table 必须存原始值** | 模型内部 `InferencePipeline` 自动处理 transform/inverse |
+| **TS 模型需要 update_ts** | 否则 gap 过长会导致 forecast 收敛到均值 |
+| **predict() 返回 DataFrame** | 不再是 dict，直接可用 `pandas` 操作 |

@@ -9,141 +9,93 @@
 ```
 InferencePipeline  →  单模型推理 / 持久化
 ModelVault         →  多模型存储 / 对比 / 批量推理
-DeploymentRuntime  →  生产部署 / 时间检查 / 持久化
+DeploymentRuntime  →  生产部署 / data_table / predict / feed
+EpiAI.risk         →  风险预警（独立模块）
+```
+
+### 快速路径
+
+```python
+from EpiAI.inference import DeploymentRuntime, ModelVault
+
+# 加载 vault + 历史数据
+runtime = DeploymentRuntime(
+    vault=ModelVault.load("/path/to/vault/"),
+    data_table=pd.read_csv("/path/to/history.csv"),
+)
+
+# 预测未来 12 个月
+preds = runtime.predict(horizon=12)  # → pd.DataFrame
 ```
 
 ---
 
-### InferencePipeline
+## InferencePipeline
 
-封装一个已训练的模型和变换管道。
+一个训练好的模型 + 对应的 transforms，提供 `predict(df)` 和 `forecast(steps)`。
 
-```python
-from EpiAI import InferencePipeline
-
-# 从训练结果构建
-inferer = InferencePipeline.from_train_result(result)
-inferer.save("/path/to/model.zip")
-
-# 恢复
-inferer = InferencePipeline.load("/path/to/model.zip")
-
-# 推理
-pred = inferer.predict(new_data_df)           # 窗口模型
-forecast = inferer.forecast(6)                # TS 模型
-updated = inferer.update(np.array([1200]))    # TS 在线更新
-```
-
-### ModelVault
-
-管理和对比多个训练好的模型。
-
-```python
-from EpiAI import ModelVault
-
-vault = ModelVault.from_results({"RF": r_rf, "XGB": r_xgb}, bundle)
-vault.save("/tmp/vault/")
-
-# 对比表
-print(vault.summary())
-
-# 选最优
-best_name = vault.best("R2")
-
-# 批量推理
-results = vault.predict_all(new_data)
-
-# 单模型取用
-inferer = vault["RF"]
-```
-
-### DeploymentRuntime
-
-生产部署运行时，维护统一历史数据表。
-
-```python
-from EpiAI import DeploymentRuntime
-
-runtime = DeploymentRuntime(vault, time_col="time", time_unit="MS")
-runtime.data_table = historical_data.copy()
-
-# 每月调用
-result = runtime.feed(new_observation)
-```
-
-详见 [部署 API 参考](../api-deployment.md)。
+| 方法 | 说明 |
+|------|------|
+| `predict(df)` | 用新数据预测（窗口模型），自动 transform + inverse |
+| `forecast(steps)` | 纯未来预测（TS 模型），自动 inverse |
+| `update(y_new)` | 在线更新 TS 模型状态 |
+| `save(path)` / `load(path)` | 持久化 |
 
 ---
 
-## 数据流
+## ModelVault
 
-```
-训练阶段：
-  CSV → ForecastPipeline → bundle → EpiAITrainer.fit() → TrainResult
-  TrainResult → InferencePipeline.save("model.zip")     ← 单模型
-  TrainResult → ModelVault.save("/path/to/vault/")      ← 多模型
+管理多个 InferencePipeline 的集合。
 
-部署阶段：
-  ModelVault.load() → DeploymentRuntime → runtime.feed(new_data)
-                                        → {模型名: {time, pred}}
-```
-
----
-
-## 持久化格式
-
-| 方式 | 格式 | 内容 |
-|------|------|------|
-| InferencePipeline | `model.zip` | config.json + model.pkl + transforms.pkl |
-| ModelVault | `目录` | manifest.json + 每个模型一个子目录 |
-| DeploymentRuntime | `目录` | runtime_meta.json + data_table.parquet + vault/ |
+| 方法 | 说明 |
+|------|------|
+| `from_results(results, bundle)` | 从训练结果创建 |
+| `summary()` | 模型对比表（按 Pearson r 排序） |
+| `best(metric="PearsonR")` | 最优模型名 |
+| `predict_all(new_data, steps)` | 批量推理 |
+| `save(path)` / `load(path)` | 持久化 |
 
 ---
 
-## 扩展指南
+## DeploymentRuntime
 
-### 添加新的持久化后端
+生产部署核心，管理 data_table + predict。
 
-默认使用 pickle 序列化模型。如需替换为其他格式（如 torch.jit、ONNX），重写 `BaseForecaster.save()` / `load()`：
+| 方法 | 说明 |
+|------|------|
+| `predict(horizon=1)` | 预测未来 horizon 步 → pd.DataFrame |
+| `feed(new_data)` | 追加新观测 |
+| `update_ts(names=None)` | TS 模型滑动窗口重训 |
+| `retrain_all()` | 全部模型用全量数据重训 |
+| `save(path)` / `load(path)` | 持久化 |
 
-```python
-class MyModel(SomeMixin):
-    def save(self, path):
-        torch.save(self.state_dict(), path)
-        json.dump({"config": self.config}, open(path + ".cfg", "w"))
+**关键设计：**
 
-    @classmethod
-    def load(cls, path):
-        config = json.load(open(path + ".cfg"))
-        model = cls(**config)
-        model.load_state_dict(torch.load(path))
-        return model
-```
+- `data_table` 存储**原始尺度**数据
+- 模型内部的 `InferencePipeline` 自动处理 transform/inverse
+- `predict()` 返回 `pd.DataFrame`（行=时间，列=模型）
 
-### 添加新的持久化后端到 InferencePipeline
+---
 
-修改 `InferencePipeline.save()` 中的模型序列化部分：
+## EpiAI.risk 风险预警
 
-```python
-def save(self, path):
-    zip_path = Path(path).with_suffix(".zip")
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("config.json", json.dumps(config))
-        zf.writestr("model.pkl", pickle.dumps(self.model))  # ← 替换此行
-        zf.writestr("transforms.pkl", pickle.dumps(self.transforms))
-```
+独立模块，不依赖 DeploymentRuntime。
 
-### 自定义部署逻辑
+| 类 | 方法 | 说明 |
+|----|------|------|
+| `RiskScorer(method)` | `.fit(history)`, `.score_df(preds)` | 预测值→风险等级 |
+| `WarningRule(ensemble)` | `.evaluate(risk_df)`, `.report()` | 多模型融合+预警 |
 
-`DeploymentRuntime.feed()` 内部的模型循环可以覆写或扩展。例如在 feed 前后加入日志、告警等：
+支持四种评分方法：`quantile` / `threshold` / `zscore` / `pct_change`。
 
-```python
-class LoggingRuntime(DeploymentRuntime):
-    def feed(self, new_data):
-        print(f"[{datetime.now()}] feed {len(new_data)} rows")
-        result = super().feed(new_data)
-        for name, r in result.items():
-            if "error" in r:
-                print(f"[WARN] {name}: {r['error']}")
-        return result
-```
+---
+
+## 迁移指南（v0.4 → v0.5）
+
+| 旧 API | 新 API |
+|--------|--------|
+| `runtime.feed(data)["model"]["pred"]` | `runtime.feed(data)` + `runtime.predict()` |
+| `runtime.predict(target_time)` | `runtime.predict(horizon=N)` |
+| `runtime.predict_range(s, e)` | `runtime.predict(horizon=N)`（已移除循环） |
+| `_train_end_time` | `_history_end_time`（自动推断） |
+| `results[name]` (dict) | `results[name]` (pd.Series) |
