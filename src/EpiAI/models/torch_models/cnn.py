@@ -43,7 +43,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("CNN", "cnn")
+@register("CNN")
 class CNNForecaster(nn.Module, TorchMixin):
     """
     基于 1D CNN 的时间序列预测模型
@@ -71,6 +71,8 @@ class CNNForecaster(nn.Module, TorchMixin):
         linear_hid: int = 128,
     ) -> None:
         super().__init__()
+
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
 
         # ===== 基本参数 =====
         self.input_dim = input_dim
@@ -124,6 +126,7 @@ class CNNForecaster(nn.Module, TorchMixin):
 
         # ===== CNN 特征提取 =====
         # (B, lookback, input_dim) -> (B, input_dim, lookback)
+        x = self.input_norm(x)
         x = x.permute(0, 2, 1)
 
         x = self.pool(F.relu(self.conv1(x)))

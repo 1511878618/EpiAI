@@ -11,7 +11,7 @@ from sklearn.linear_model import LinearRegression
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("GLM", "LinearReg", "linear")
+@register("LinearReg")
 class LinearRegForecaster(SklearnMixin):
     """
     单模型线性回归时间序列预测器。

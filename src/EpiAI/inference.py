@@ -90,6 +90,8 @@ class InferencePipeline:
         self.feature_names = list(feature_names)
         self.target_names = list(target_names)
         self.paradigm = paradigm
+        # 记录模型 init 参数，供 retrain 时重建模型实例使用
+        self.model_config: dict = {}
 
     # ── Factory ─────────────────────────────────────────────────
 
@@ -349,6 +351,86 @@ class InferencePipeline:
 
         return _inv(preds, self.target_names, self.transforms, y_true=None)
 
+    # ── Retrain all models on full data ──────────────────────────
+
+    def retrain_all(self) -> None:
+        """用 data_table 中的全部数据重新训练所有模型并更新 vault."""
+        if self.data_table.empty:
+            raise RuntimeError("data_table is empty.")
+
+        df = self.data_table.copy()
+        tc = self.time_col
+        # 读取任意模型的 target/feature 列名
+        first = next(iter(self.vault.models.values()))
+        tgt, feat = first.target_names, first.feature_names
+
+        import tempfile
+        from EpiAI.dataset import (ForecastPipeline, CsvLoader, TimeSplit,
+                                    Compose, SlidingWindow)
+        from EpiAI.trainer import EpiAITrainer
+        from EpiAI.models.registry import get
+
+        for name, inferer in list(self.vault.models.items()):
+            print(f"  重训 {name} ...", end=" ", flush=True)
+            try:
+                if inferer.paradigm == "ts":
+                    self._retrain_ts(name, inferer, df)
+                else:
+                    self._retrain_window(name, inferer, df, tgt, feat)
+                print("OK")
+            except Exception as e:
+                print(f"FAILED: {e}")
+
+        self._history_end_time = pd.to_datetime(df[tc].iloc[-1])
+        print(f"\n全部重训完成 -> 训练结束时间: {self._history_end_time.date()}")
+
+    def _retrain_window(self, name, inferer, df, tgt, feat):
+        L, H = inferer.lookback, inferer.horizon
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+            df.to_csv(tmp.name, index=False);  p = tmp.name
+        pipeline = ForecastPipeline(
+            loader=CsvLoader(time_col=self.time_col, target_cols=tgt,
+                             feature_cols=feat),
+            split=TimeSplit(train_ratio=1.0, val_ratio=0.0),
+            transforms=inferer.transforms,
+            window=SlidingWindow(lookback=L, horizon=H),
+        )
+        bundle = pipeline.run(p)
+        os.unlink(p)
+
+        cls = get(inferer.model_config.get("register_name", name))
+        kw = inferer.model_config.get("init_kwargs", {})
+        model = cls(input_dim=bundle.n_features, lookback=L,
+                    horizon=H, target_dim=1, **kw)
+        tr = EpiAITrainer(model=model, verbose=False).fit(bundle)
+
+        new_pip = InferencePipeline(
+            model=model, transforms=inferer.transforms,
+            lookback=L, horizon=H,
+            feature_names=feat, target_names=tgt,
+            paradigm=model.paradigm(),
+        )
+        new_pip.model_config = inferer.model_config
+        self.vault.models[name] = new_pip
+
+    def _retrain_ts(self, name, inferer, df):
+        y_full = df[inferer.target_names].values.squeeze().astype(float)
+        dates = pd.to_datetime(df[self.time_col]).values
+        cls = get(inferer.model_config.get("register_name", name))
+        kw = inferer.model_config.get("init_kwargs", {})
+        model = cls(**kw)
+        model.fit_sequence(y_full, dates=dates)
+
+        new_pip = InferencePipeline(
+            model=model, transforms=inferer.transforms,
+            lookback=inferer.lookback, horizon=inferer.horizon,
+            feature_names=inferer.feature_names,
+            target_names=inferer.target_names, paradigm="ts",
+        )
+        new_pip.model_config = inferer.model_config
+        self.vault.models[name] = new_pip
+
     def __repr__(self) -> str:
         return (
             f"InferencePipeline(paradigm={self.paradigm}, "
@@ -433,10 +515,10 @@ class ModelVault:
     # ── Query ───────────────────────────────────────────────────
 
     def summary(self) -> pd.DataFrame:
-        """Return comparison table (sorted by R² descending)."""
-        return self.metrics.sort_values("R2", ascending=False)
+        """Return comparison table (sorted by Pearson r descending)."""
+        return self.metrics.sort_values("PearsonR", ascending=False)
 
-    def best(self, metric: str = "R2") -> str:
+    def best(self, metric: str = "PearsonR") -> str:
         """Return the name of the best model by *metric*.  Higher is better."""
         best_name = self.metrics[metric].idxmax()
         return best_name  # type: ignore[no-any-return]
@@ -503,6 +585,7 @@ class ModelVault:
                 "n_targets": len(pip.target_names),
                 "feature_names": pip.feature_names,
                 "target_names": pip.target_names,
+                "model_config": pip.model_config,
             }
             if name in self.metrics.index:
                 row = self.metrics.loc[name]
@@ -577,22 +660,31 @@ class BufferError(RuntimeError):
 
 
 class DeploymentRuntime:
-    """Production runtime that maintains a persistent data table.
+    """生产部署运行时，管理 data_table + vault 的预测与更新。
 
-    Each call to ``feed(new_data)`` appends data, checks time continuity,
-    and runs predictions for all models in the vault.  TS models are not
-    auto-updated — call ``update_model()`` explicitly.
+    核心设计
+    --------
+    - ``data_table``: 全部历史观测数据，**原始尺度**（未归一化），按时间排序
+    - ``predict(horizon)``: 预测未来 horizon 步，返回 时间×模型 表格
+    - ``feed(new_data)``: 追加新观测
+
+    注意:
+    - ``data_table`` 必须存储**原始尺度**数据（与训练时 CSV 一致）。
+      模型内部 ``InferencePipeline`` 会自动处理 transform/inverse_transform。
+    - ``predict()`` 返回的结果也是原始尺度。
 
     Parameters
     ----------
     vault : ModelVault
-        Trained models.
+        已训练的模型集合。
     time_col : str
-        Name of the time column.
-    time_unit : str, optional
-        Pandas offset alias (``\"MS\"``, ``\"D\"``, etc.).
-    strict : bool, default=True
-        When True, time gaps raise ``TimeGapError``.
+        时间列名。
+    time_unit : str
+        时间频率（\"MS\" 月, \"D\" 日, 默认 \"MS\"）。
+    strict : bool
+        严格模式，默认 True 时时间不连续报错。
+    data_table : pd.DataFrame or None
+        初始历史数据表（原始尺度）。可在之后通过 ``.data_table`` 属性设置。
     """
 
     def __init__(
@@ -601,155 +693,208 @@ class DeploymentRuntime:
         time_col: str = "time",
         time_unit: str = "MS",
         strict: bool = True,
+        data_table: Optional[pd.DataFrame] = None,
     ) -> None:
         self.vault = vault
         self.time_col = time_col
         self.time_unit = time_unit
         self.strict = strict
         self._time_delta = pd.tseries.frequencies.to_offset(time_unit)
-        self._feed_count = 0
         self._path: Optional[Path] = None
+        self.data_table: pd.DataFrame = data_table.copy() if data_table is not None else pd.DataFrame()
+        self._history_end_time: Optional[pd.Timestamp] = (
+            pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+            if not self.data_table.empty else None
+        )
 
-        # data_table: shared persistent history
-        self.data_table: pd.DataFrame = pd.DataFrame()
+    def _validate_time_granularity(self):
+        """检查 data_table 时间列颗粒度与 time_unit 一致，并检查缺失值。"""
+        if self.data_table.empty:
+            return
+        times = pd.to_datetime(self.data_table[self.time_col])
+        # 检查 NA
+        if times.isna().any():
+            print("[WARN] data_table 时间列存在缺失值 (NaT).")
+        # 检查颗粒度：相邻时间差是否都是 time_unit 的整数倍
+        diffs = times.diff().dropna()
+        expected = pd.Timedelta(self._time_delta)
+        bad = diffs[diffs != expected]
+        if not bad.empty:
+            msg = (f"时间颗粒度不一致: 期望 {expected}, "
+                   f"发现差异 {bad.unique().tolist()}")
+            if self.strict:
+                raise TimeGapError(msg)
+            else:
+                print(f"[WARN] {msg}")
 
-        # Infer train_end_time from the first model's meta
-        self._train_end_time: Optional[pd.Timestamp] = None
+    # ── Core: predict ─────────────────────────────────────────
 
-    # ── Core feed ────────────────────────────────────────────────
+    def predict(self, horizon: int = 1) -> pd.DataFrame:
+        """预测未来 horizon 步，返回 时间×模型 表格。
 
-    def feed(self, new_data: pd.DataFrame) -> Dict[str, Any]:
-        """Process new observations and return predictions.
+        TS 模型：从 _last_ds 到 data_table 末尾的 gap 通过 forecast
+        额外步数跳过，只返回真正未来 horizon 步的预测值。
+        窗口模型：取 data_table 最后 L 行，一次 predict 出 horizon 步。
 
         Parameters
         ----------
-        new_data : pd.DataFrame
-            One or more rows with ``time_col`` and feature/target columns.
+        horizon : int
+            预测步数，默认 1。
 
         Returns
         -------
-        dict of {name: {"time": DatetimeIndex, "pred": ndarray}}
+        pd.DataFrame
+            行 = 时间点, 列 = 模型名, 值为预测值。
         """
-        new_data = new_data.copy()
-        self._check_time_continuity(new_data)
-        self.data_table = pd.concat(
-            [self.data_table, new_data], ignore_index=True
-        )
-        self._feed_count += 1
-
-        results: Dict[str, Any] = {}
+        if self.data_table.empty:
+            raise RuntimeError("data_table 为空，无法预测。")
         last_time = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
+        future = pd.date_range(
+            start=last_time + self._time_delta,
+            periods=horizon,
+            freq=self._time_delta,
+        )
 
+        results: Dict[str, np.ndarray] = {}
         for name, inferer in self.vault.models.items():
             try:
                 if inferer.paradigm == "ts":
-                    # TS: forecast from current state (no auto-update).
-                    # Each feed advances the prediction window:
-                    #   feed 1: forecast(horizon)     → [t+1, t+2, t+3]
-                    #   feed 2: forecast(horizon+1)   → take last 3 → [t+2, t+3, t+4]
-                    #   feed 3: forecast(horizon+2)   → take last 3 → [t+3, t+4, t+5]
-                    n_fcst = inferer.horizon + max(0, self._feed_count - 1)
-                    raw = inferer.forecast(n_fcst)
-                    preds = np.asarray(raw, dtype=np.float32).ravel()
-                    # Take the last horizon steps that correspond to NOW + future
-                    preds = preds[-inferer.horizon:]
-                    future = pd.date_range(
-                        start=last_time + self._time_delta,
-                        periods=inferer.horizon,
-                        freq=self._time_delta,
-                    )
-                    results[name] = {"time": future, "pred": preds}
-
+                    last_ds = pd.Timestamp(inferer.model._last_ds)
+                    # gap = data_table 末尾到 _last_ds 的步数
+                    # 这些步是已观测数据，通过 forecast 额外步数跳过
+                    gap = ((last_time.year - last_ds.year) * 12 +
+                           (last_time.month - last_ds.month))
+                    raw = inferer.forecast(gap + horizon)
+                    pred = np.asarray(raw, dtype=np.float32).ravel()
+                    pred = pred[-horizon:]  # 只取真正未来的 horizon 步
                 else:
-                    # Window model: pull last lookback rows
                     lb = inferer.lookback
                     if len(self.data_table) < lb:
                         raise BufferError(
-                            f"{name} needs {lb} rows, "
-                            f"data_table has {len(self.data_table)}"
-                        )
-                    # Pass raw DataFrame slice — InferencePipeline handles
-                    # transforms + windowing internally
-                    x_df = self.data_table.tail(lb)[inferer.feature_names]
-                    raw = inferer.predict(x_df)
-                    future = pd.date_range(
-                        start=last_time + self._time_delta,
-                        periods=inferer.horizon,
-                        freq=self._time_delta,
-                    )
-                    results[name] = {"time": future, "pred": raw[0, :, 0]}
+                            f"需要 {lb} 行历史, 当前 {len(self.data_table)}.")
+                    # 取 data_table 最后 L 行（末行 = last_time），
+                    # predict 输出的 step 0 对应 future[0]（last_time + 1）
+                    # 使用 InferencePipeline.predict() 自动处理 transforms
+                    x_df = self.data_table.iloc[-lb:][inferer.feature_names]
+                    raw = inferer.predict(x_df)  # (N, H, T)，已 inverse-transform
+                    raw = np.asarray(raw, dtype=np.float32)
+                    n_out = min(horizon, raw.shape[1])
+                    pred = raw[0, :n_out, 0]
+                    if n_out < horizon:
+                        pred = np.pad(pred, (0, horizon - n_out),
+                                      'constant', constant_values=np.nan)
+                results[name] = pred
+            except Exception:
+                results[name] = np.full(horizon, np.nan)
+        return pd.DataFrame(results, index=future.strftime("%Y-%m"))
 
-            except Exception as e:
-                results[name] = {"error": str(e)}
+    # ── Feed ───────────────────────────────────────────────────
 
-        self._persist()
-        return results
+    def feed(self, new_data: pd.DataFrame) -> None:
+        """追加新观测数据到 data_table。"""
+        new_data = new_data.copy()
+        self._check_time_continuity(new_data)
+        self.data_table = pd.concat(
+            [self.data_table, new_data], ignore_index=True)
 
-    # ── Explicit TS model update ─────────────────────────────────
+    # ── TS 模型在线更新 ──────────────────────────────────────
 
-    def update_model(self, name: str, new_y: np.ndarray) -> None:
-        """Explicitly update a TS model's internal state.
+    def update_ts(self, names: Optional[list[str]] = None) -> None:
+        """用 data_table 中最近的数据重新拟合 TS 模型。
 
-        This is a separate step from ``feed()`` — the user decides
-        when data quality is sufficient for a state update.
+        保持与原始训练相同的数据量（滑动窗口），只取
+        data_table 中最近的 N 行重新拟合，使模型状态
+        追赶至最新。不使内部历史无限增长。
+
+        Parameters
+        ----------
+        names : list of str or None
+            要更新的模型名列表。默认更新所有 TS 模型。
         """
-        inferer = self.vault.get(name)
-        if inferer.paradigm != "ts":
-            raise TypeError(f"{name} is not a TS model.")
+        dt = self.data_table
+        if dt.empty:
+            raise RuntimeError("data_table 为空。")
 
-        # Backup current state before updating
-        if self._path is not None:
-            backup_dir = self._path / "ts_backup" / name
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            np.save(
-                backup_dir / f"y_history_{self._feed_count}.npy",
-                inferer.model.y_history_,
-            )
-
-        inferer.update(np.asarray(new_y, dtype=np.float32))
-        self._persist()
-
-    def update_all_ts(self, data: pd.DataFrame) -> None:
-        """Batch-update all TS models (reserved for future retrain)."""
         for name, inferer in self.vault.models.items():
-            if inferer.paradigm == "ts":
-                y_new = data[inferer.target_names].values.ravel().astype(np.float32)
-                self.update_model(name, y_new)
+            if inferer.paradigm != "ts":
+                continue
+            if names is not None and name not in names:
+                continue
 
-    # ── Time continuity ──────────────────────────────────────────
+            # 读取原始训练数据量：不同模型存储在不同的属性中
+            model = inferer.model
+            orig_size = (
+                getattr(model, "train_size_", None) or       # ARIMA
+                getattr(model, "_n_train", None) or           # BSTS
+                (len(getattr(model, "_y_train", [])) or None) # ETS/Serfling/STLM/Prophet
+            )
+            if orig_size is None:
+                continue
+
+            # 取 data_table 最近 orig_size 行 → 作为新训练数据
+            n = min(orig_size, len(dt))
+            dt_slice = dt.iloc[-n:]
+
+            y_raw = dt_slice[inferer.target_names].values.squeeze().astype(float)
+            dates = pd.to_datetime(dt_slice[self.time_col]).values
+
+            # 变换到模型期望的空间（data_table 是原始尺度）
+            if inferer.transforms is not None:
+                y_df = pd.DataFrame(
+                    {tn: y_raw for tn in inferer.target_names},
+                    index=range(len(y_raw)),
+                )
+                y_t = inferer.transforms.transform(y_df)
+                y_full = y_t[inferer.target_names].values.squeeze().astype(float)
+            else:
+                y_full = y_raw
+
+            model.fit_sequence(y_full, dates=dates)
+
+            # 更新 _last_ds（trainer 外直接调 fit_sequence 时不自动设置）
+            if dates is not None and len(dates) > 0:
+                model._last_ds = pd.to_datetime(dates[-1])
+
+    def _find_time_index(self, target_time: pd.Timestamp) -> int:
+        """在 data_table 中查找 target_time 的行索引。"""
+        times = pd.to_datetime(self.data_table[self.time_col])
+        matches = np.where(times == target_time)[0]
+        if len(matches) == 0:
+            raise KeyError(
+                f"时间 {target_time.date()} 不在 data_table 中. "
+                f"范围: {times.iloc[0].date()} ~ {times.iloc[-1].date()}")
+        return int(matches[-1])
+
+    # ── Time continuity ───────────────────────────────────────
 
     def _check_time_continuity(self, new_data: pd.DataFrame) -> None:
         new_times = pd.to_datetime(new_data[self.time_col])
 
         if self.data_table.empty:
-            # First feed: must follow train_end_time
-            if self._train_end_time is not None:
-                expected = self._train_end_time + self._time_delta
+            if self._history_end_time is not None:
+                expected = self._history_end_time + self._time_delta
                 if new_times[0] != expected:
                     self._raise_or_warn(
                         TimeGapError,
                         f"First feed time {new_times[0]} does not follow "
-                        f"train_end {self._train_end_time}. Expected {expected}.",
+                        f"train_end {self._history_end_time}. Expected {expected}.",
                     )
             elif self.strict:
                 self._raise_or_warn(
                     TimeGapError,
-                    "First feed: _train_end_time is not set. "
-                    "Set runtime._train_end_time = training_data['time'].iloc[-1] "
+                    "First feed: _history_end_time is not set. "
+                    "Set runtime._history_end_time = training_data['time'].iloc[-1] "
                     "to enable time continuity checking.",
                 )
             return
 
         last = pd.to_datetime(self.data_table[self.time_col].iloc[-1])
-
-        # Check for disorder (new time <= last seen)
         if new_times[0] <= last:
             self._raise_or_warn(
                 TimeOrderError,
                 f"Time disorder: last={last}, new={new_times[0]}",
             )
 
-        # Check each new row for continuity
         expected = last + self._time_delta
         for i, t in enumerate(new_times):
             expected_i = expected + i * self._time_delta
@@ -766,15 +911,9 @@ class DeploymentRuntime:
         import warnings
         warnings.warn(f"[DeploymentRuntime] {msg}", stacklevel=3)
 
-    # ── Persistence ──────────────────────────────────────────────
-
-    def _persist(self) -> None:
-        """Auto-save after each feed/update (no-op if never saved)."""
-        if self._path is not None:
-            self.save(str(self._path))
+    # ── Persistence ───────────────────────────────────────────
 
     def _save_data_table(self, path: Path) -> None:
-        """Save data_table. Prefers parquet, falls back to CSV."""
         if self.data_table.empty:
             return
         try:
@@ -783,27 +922,18 @@ class DeploymentRuntime:
             self.data_table.to_csv(path / "data_table.csv", index=False)
 
     def save(self, path: Union[str, Path]) -> str:
-        """Persist runtime state to disk."""
         path = Path(path)
         if path.exists():
             shutil.rmtree(path)
         path.mkdir(parents=True)
-
         self._path = path
-
-        # data_table
         self._save_data_table(path)
-
-        # vault
         self.vault.save(str(path / "vault"))
-
-        # meta
         meta = {
-            "feed_count": self._feed_count,
             "time_col": self.time_col,
             "time_unit": self.time_unit,
             "strict": self.strict,
-            "train_end_time": str(self._train_end_time) if self._train_end_time else None,
+            "history_end_time": str(self._history_end_time) if self._history_end_time else None,
             "last_time": str(self.data_table[self.time_col].iloc[-1])
             if not self.data_table.empty else None,
             "n_rows": len(self.data_table),
@@ -811,12 +941,10 @@ class DeploymentRuntime:
         (path / "runtime_meta.json").write_text(
             json.dumps(meta, indent=2, ensure_ascii=False)
         )
-
         return str(path.resolve())
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "DeploymentRuntime":
-        """Restore runtime state from disk."""
         path = Path(path)
         meta_path = path / "runtime_meta.json"
         if not meta_path.exists():
@@ -831,13 +959,11 @@ class DeploymentRuntime:
             time_unit=meta["time_unit"],
             strict=meta["strict"],
         )
-        runtime._feed_count = meta["feed_count"]
         runtime._path = path
 
-        if meta["train_end_time"]:
-            runtime._train_end_time = pd.Timestamp(meta["train_end_time"])
+        if meta["history_end_time"]:
+            runtime._history_end_time = pd.Timestamp(meta["history_end_time"])
 
-        # Restore data_table
         dt_path = path / "data_table.parquet"
         if dt_path.exists():
             runtime.data_table = pd.read_parquet(dt_path)
@@ -851,8 +977,7 @@ class DeploymentRuntime:
     def __repr__(self) -> str:
         return (
             f"DeploymentRuntime({len(self.vault.models)} models, "
-            f"{len(self.data_table)} rows, "
-            f"feed_count={self._feed_count})"
+            f"{len(self.data_table)} rows)"
         )
 
 

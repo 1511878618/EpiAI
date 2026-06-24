@@ -11,7 +11,7 @@ from EpiAI.models.base import TSMixin
 from EpiAI.models.registry import register
 
 
-@register("ARIMA", "auto_arima", "pmdarima")
+@register("ARIMA")
 class AutoARIMAXRollingForecaster(TSMixin):
     """
     Auto-ARIMA / ARIMAX / SARIMAX rolling-origin forecaster.
@@ -180,7 +180,7 @@ class AutoARIMAXRollingForecaster(TSMixin):
         model.fit(y_window, X=X_window)
         return model
 
-    def fit_sequence(self, y_train, X_train=None):
+    def fit_sequence(self, y_train, X_train=None, **kwargs):
         """
         Select ARIMA/SARIMAX order on training data and save training history.
         """
@@ -297,7 +297,7 @@ class AutoARIMAXRollingForecaster(TSMixin):
         )
 
     def predict_sequence(self, y_test, X_test=None, update_state: bool = True,
-                         return_df: bool = True):
+                         return_df: bool = True, **kwargs):
         """
         Rolling-origin prediction and then update internal history with true y_test/X_test.
         Only works when  rolling_window_size == 'all'
@@ -335,10 +335,7 @@ class AutoARIMAXRollingForecaster(TSMixin):
 
         model = self._fit_fixed_order_model(self.y_history_, self.X_history_)
 
-        pred = model.predict(
-            n_periods=n_periods,
-            X=X_future,
-        )
+        pred = model.predict(n_periods=n_periods)
 
         return self._clip(pred)
 

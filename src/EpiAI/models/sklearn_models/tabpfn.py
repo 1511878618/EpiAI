@@ -11,7 +11,7 @@ else:
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("TabPFN", "tabpfn")
+@register("TabPFN")
 class TabPFNMultiForecaster(SklearnMixin):
     """
     多模型 TabPFN 时间序列预测器

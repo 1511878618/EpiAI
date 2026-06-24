@@ -52,6 +52,39 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
+
+def FFT_for_Period(x: torch.Tensor, k: int = 5) -> tuple:
+    """频域周期发现：通过 FFT 找出 top-k 个主导周期。
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (B, T, N)
+    k : int
+        返回的 top-k 周期数。
+
+    Returns
+    -------
+    period_list : list of int
+        top-k 周期长度。
+    period_weight : torch.Tensor, shape (B, k)
+        每个周期的权重（FFT 幅值）。
+    """
+    B, T, N = x.shape
+    # FFT along time dimension
+    xf = torch.fft.rfft(x, dim=1)
+    # Average across feature and batch dimensions
+    freq = abs(xf).mean(dim=-1).mean(dim=0)  # (T // 2 + 1,)
+    # Exclude DC component (index 0)
+    freq[0] = 0
+    _, top_idx = torch.topk(freq, k)
+    # Convert frequency indices to periods
+    period_list = (T // (top_idx + 1)).cpu().numpy().tolist()
+    # Weights
+    period_weight = abs(xf).mean(dim=-1)[:, top_idx]  # (B, k)
+    period_weight = F.softmax(period_weight, dim=1)
+    return period_list, period_weight
+
+
 class TimesBlock(nn.Module):
     def __init__(
         self,
@@ -112,10 +145,7 @@ class TimesBlock(nn.Module):
         return res + x
 
 
-from EpiAI.models.base import TorchMixin
-from EpiAI.models.registry import register
-
-@register("TimesNet", "timesnet")
+@register("TimesNet")
 class TimesNetForecaster(nn.Module, TorchMixin):
     """
     基于 TimesNet 的时间序列预测模型

@@ -19,7 +19,7 @@ else:
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("XGB", "XGBoost", "xgb")
+@register("XGB")
 class XGBSingleForecaster(SklearnMixin):
     """
     单模型 XGBoost 时间序列预测器（带 SHAP 可解释性）
@@ -170,9 +170,7 @@ class XGBSingleForecaster(SklearnMixin):
                 verbose=verbose,
             )
         else:
-            self.model.fit(X, y_flat,verbose=verbose)
-
-        self.explainer = shap.Explainer(self.model)
+            self.model.fit(X, y_flat, verbose=verbose)
 
     def predict(self, x):
         """

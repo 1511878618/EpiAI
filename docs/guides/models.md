@@ -90,15 +90,19 @@ class ETSForecaster(TSMixin):
 | `XGB` | XGBoost |
 | `LGBM` | LightGBM |
 | `SVR` | 支持向量回归 |
-| `GLM` | 广义线性模型 |
+| `LinearReg` | 线性回归 |
 | `TabPFN` | 基于预训练 Transformer 的表格模型 |
 
-### 时间序列（2 个）
+### 时间序列（6 个）
 
 | 模型名 | 全称 |
 |--------|------|
 | `ARIMA` | 自回归差分滑动平均（含外生变量支持） |
 | `ETS` | 指数平滑（趋势 + 季节） |
+| `Serfling` | Serfling 回归（趋势 + 傅里叶季节项） |
+| `STLM` | STL 分解 + ARIMA 残差建模 |
+| `BSTS` | 贝叶斯结构时间序列（局部水平 + 季节） |
+| `Prophet` | Facebook Prophet 突变点 + 季节模型 |
 
 ---
 

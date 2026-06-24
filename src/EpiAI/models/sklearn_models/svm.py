@@ -12,7 +12,7 @@ from sklearn.multioutput import MultiOutputRegressor
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("SVR", "svr", "SVM")
+@register("SVR")
 class SVRForecaster(SklearnMixin):
     """
     单模型 SVM 时间序列预测器。

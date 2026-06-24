@@ -9,7 +9,7 @@ from EpiAI.models.base import TSMixin
 from EpiAI.models.registry import register
 
 
-@register("ETS", "ets", "exponential_smoothing")
+@register("ETS")
 class ETSForecaster(TSMixin):
     """
     ETS (Error-Trend-Seasonality) forecaster.
@@ -39,7 +39,7 @@ class ETSForecaster(TSMixin):
         self._result = None
         self._y_train = None
 
-    def fit_sequence(self, y_train, X_train=None):
+    def fit_sequence(self, y_train, X_train=None, **kwargs):
         """一次性拟合 ETS 模型，不支持 X。"""
         if X_train is not None:
             raise ValueError("ETS does not support exogenous variables (X_train).")
@@ -63,7 +63,7 @@ class ETSForecaster(TSMixin):
         self._result = model.fit(disp=False)
         return self
 
-    def predict_sequence(self, y_test, X_test=None, update_state=True, return_df=True):
+    def predict_sequence(self, y_test, X_test=None, update_state=True, return_df=True, **kwargs):
         """在训练集上直接 forecast horizon 步，与 y_test 比较。"""
         if self._result is None:
             raise RuntimeError("Model not fitted. Call fit() first.")

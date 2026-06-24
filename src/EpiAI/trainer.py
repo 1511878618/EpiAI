@@ -46,7 +46,6 @@ class TrainResult:
     predictions: np.ndarray
     metrics: pd.DataFrame
     history: Optional[dict] = None
-
     def __repr__(self) -> str:
         return (
             f"TrainResult(model={type(self.model).__name__}, "
@@ -208,14 +207,29 @@ class EpiAITrainer:
     # ── TimeSeries path ─────────────────────────────────────────────
 
     def _fit_ts(self, bundle):
+        # ── TS 模型不使用验证集，合入训练集 ────────────────
+        # 验证集对 TS 模型无意义（无 early stopping、无超参选择），
+        # 且会在训练集和测试集之间制造日期 gap，导致 forecast 错位。
         y_train = bundle.get_y_series("train").squeeze()
         y_test = bundle.get_y_series("test").squeeze()
 
+        # Extract real dates from the bundle
+        try:
+            time_col = bundle.data.time_col
+            train_dates = bundle.train_df[time_col].values
+            test_dates = bundle.test_df[time_col].values
+        except (AttributeError, KeyError):
+            train_dates = test_dates = None
+
+        # Merge val into train (TS models don't use val)
+        if bundle.val_df is not None:
+            y_val = bundle.get_y_series("val").squeeze()
+            y_train = np.concatenate([y_train, y_val])
+            if train_dates is not None:
+                val_dates = bundle.val_df[time_col].values
+                train_dates = np.concatenate([train_dates, val_dates])
+
         # Strip feature columns that overlap with targets.
-        # ARIMA/ETS already model y from its own past, so passing
-        # future y as an exogenous variable would leak the answer.
-        # Non-overlapping columns (e.g. temp, humidity) are kept as
-        # legitimate exogenous variables.
         _overlap = set(bundle.feature_names) & set(bundle.target_names)
         if _overlap:
             _keep = [c for c in bundle.feature_names if c not in _overlap]
@@ -223,22 +237,46 @@ class EpiAITrainer:
                 _idx = [bundle.feature_names.index(c) for c in _keep]
                 X_train = bundle.get_X_series("train")[:, _idx]
                 X_test = bundle.get_X_series("test")[:, _idx]
+                # Merge val X into train X
+                if bundle.val_df is not None:
+                    X_val = bundle.get_X_series("val")[:, _idx]
+                    X_train = np.concatenate([X_train, X_val])
             else:
                 X_train = X_test = None
         else:
             X_train = bundle.get_X_series("train") if bundle.feature_names else None
             X_test = bundle.get_X_series("test") if bundle.feature_names else None
+            # Merge val X into train X
+            if bundle.val_df is not None and X_train is not None:
+                X_val = bundle.get_X_series("val")
+                X_train = np.concatenate([X_train, X_val])
+        # ── 验证集已合入训练集，train 与 test 直接相邻 ──────────
+        n_test = len(y_test)
+
+        # 为所有 TS 模型设置 _last_ds（供 DeploymentRuntime 使用）
+        # 这样每个 TS 模型都知道自己的训练结束日期
+        if train_dates is not None and len(train_dates) > 0:
+            self.model._last_ds = pd.to_datetime(train_dates[-1])
 
         # Try with X features first, fall back to univariate
         try:
-            self.model.fit_sequence(y_train, X_train)
-            preds = self.model.predict_sequence(y_test, X_test, update_state=True)
+            self.model.fit_sequence(y_train, X_train, dates=train_dates)
+            # 传真实 y_test（ARIMA 的 rolling-origin 需要真实值做滚动更新）
+            preds = self.model.predict_sequence(
+                y_test, X_test, update_state=False,
+                dates=test_dates,
+            )
         except (ValueError, TypeError) as e:
             if "X" in str(e) or "exogenous" in str(e) or "X_train" in str(e):
-                self.model.fit_sequence(y_train, None)
-                preds = self.model.predict_sequence(y_test, None, update_state=True)
+                self.model.fit_sequence(y_train, None, dates=train_dates)
+                preds = self.model.predict_sequence(
+                    y_test, None, update_state=False,
+                    dates=test_dates,
+                )
             else:
                 raise
+
+        # preds 已直接与测试期对齐（无 gap 需要截取）
 
         # Ensure preds is numpy array, (N, horizon, target_dim)
         if isinstance(preds, pd.DataFrame):
@@ -259,19 +297,60 @@ class EpiAITrainer:
             # TS models predict raw time series length
             n = predictions.shape[0]
             y_true = bundle.get_y_series("test")[:n]
-        else:
-            # Window models: ground truth is test_y (same windowing)
-            y_true = bundle.test_y[:, 0, :].copy()  # first horizon step only
+            predictions = inverse_predictions(
+                predictions, bundle.target_names, bundle.transforms, y_true=y_true,
+            )
+            metrics = _compute_metrics(y_true, predictions, bundle.target_names)
+            return TrainResult(
+                model=self.model,
+                predictions=predictions,
+                metrics=metrics,
+                history=getattr(self, "_history", None),
+            )
 
-        # Inverse-transform using shared helper
-        predictions = inverse_predictions(
-            predictions, bundle.target_names, bundle.transforms, y_true=y_true,
+        # ── Window models (torch / sklearn) ────────────────────────
+        # 对每个测试点构造一个输入窗口，使得 ALL N 个测试点都有预测
+        N = bundle.get_y_series("test").shape[0]        # 测试点总数
+        L = bundle.lookback
+        H = bundle.horizon
+
+        # 拼接完整变换后的 DataFrame: train + val + test
+        _dfs = [bundle.train_df]
+        if bundle.val_df is not None:
+            _dfs.append(bundle.val_df)
+        if bundle.test_df is not None:
+            _dfs.append(bundle.test_df)
+        full_df = pd.concat(_dfs, ignore_index=True)
+
+        # test[t] 在 full_df 中的位置
+        test_offset = len(bundle.train_df)
+        if bundle.val_df is not None:
+            test_offset += len(bundle.val_df)
+
+        feature_cols = bundle.feature_names
+        full_input = np.stack([
+            full_df.iloc[test_offset + t - L: test_offset + t][feature_cols].values
+            for t in range(N)
+        ]).astype(np.float32)  # (N, L, n_features)
+
+        full_pred = self.model.predict(full_input)       # (N, H, n_targets)
+
+        # y_true: 所有测试点的真实值
+        y_true = bundle.get_y_series("test")[:N].copy()  # (N, n_targets)
+
+        # 逆变换 step 0
+        _inv_buf = full_pred.copy()
+        y_pred = inverse_predictions(
+            _inv_buf, bundle.target_names, bundle.transforms,
+            y_true=y_true,
         )
 
-        metrics = _compute_metrics(y_true, predictions, bundle.target_names)
+        metrics = _compute_metrics(y_true, y_pred, bundle.target_names)
+
+
         return TrainResult(
             model=self.model,
-            predictions=predictions,
+            predictions=y_pred,          # (N, H, T) step 0 已逆变换
             metrics=metrics,
             history=getattr(self, "_history", None),
         )
@@ -358,9 +437,11 @@ def inverse_predictions(
     predictions = predictions.copy()
     try:
         for i, tn in enumerate(target_names):
-            inv_series = pd.Series(predictions[:, 0, i], name=tn)
-            inv_df = transforms.inverse(inv_series.to_frame())
-            predictions[:, 0, i] = inv_df[tn].values
+            # Inverse-transform ALL horizon steps, not just step 0
+            for h in range(predictions.shape[1]):
+                inv_series = pd.Series(predictions[:, h, i], name=tn)
+                inv_df = transforms.inverse(inv_series.to_frame())
+                predictions[:, h, i] = inv_df[tn].values
 
             if y_true is not None:
                 inv_series = pd.Series(y_true[:, i], name=tn)

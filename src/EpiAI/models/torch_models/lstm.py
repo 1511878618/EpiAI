@@ -43,7 +43,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("LSTM", "lstm")
+@register("LSTM")
 class LSTMForecaster(nn.Module, TorchMixin):
     """
     基于 LSTM 的多变量时间序列预测模型
@@ -80,6 +80,8 @@ class LSTMForecaster(nn.Module, TorchMixin):
         self.horizon = horizon
         self.target_dim = target_dim
 
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
+
         # ===== LSTM 编码器 =====
         # 输入:  (B, lookback, input_dim)
         # 输出:  (B, lookback, hidden_dim)
@@ -115,6 +117,7 @@ class LSTMForecaster(nn.Module, TorchMixin):
         # ===== LSTM 编码 =====
         # out: (B, lookback, hidden_dim)
         # 这里只取输出，不使用 (h_n, c_n)
+        x = self.input_norm(x)
         out, _ = self.lstm(x)
 
         # ===== 取最后一个时间步的表示 =====

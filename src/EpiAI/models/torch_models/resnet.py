@@ -86,10 +86,7 @@ class ResidualBlock1D(nn.Module):
         return out
 
 
-from EpiAI.models.base import TorchMixin
-from EpiAI.models.registry import register
-
-@register("ResNet", "resnet")
+@register("ResNet")
 class ResNetForecaster(nn.Module, TorchMixin):
     """
     基于 ResNet 的时间序列预测模型（ResNet1D）
@@ -121,6 +118,8 @@ class ResNetForecaster(nn.Module, TorchMixin):
         self.horizon = horizon
         self.target_dim = target_dim
 
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
+
         # ===== 输入投影 =====
         self.input_proj = nn.Conv1d(
             in_channels=input_dim,
@@ -142,10 +141,11 @@ class ResNetForecaster(nn.Module, TorchMixin):
         self.resnet = nn.Sequential(*blocks)
 
         # ===== 全局池化 =====
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        # 不用 AdaptiveAvgPool1d（会丢失时间信息）
+        # 改用 flatten 保留完整时间特征
 
         # ===== 输出层 =====
-        self.fc = nn.Linear(base_channels, horizon * target_dim)
+        self.fc = nn.Linear(base_channels * lookback, horizon * target_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -156,6 +156,7 @@ class ResNetForecaster(nn.Module, TorchMixin):
         bsz = x.shape[0]
 
         # (B, T, C) -> (B, C, T)
+        x = self.input_norm(x)
         x = x.permute(0, 2, 1)
 
         # 输入投影
@@ -164,12 +165,9 @@ class ResNetForecaster(nn.Module, TorchMixin):
         # ResNet blocks
         x = self.resnet(x)
 
-        # 全局时间聚合
-        x = self.global_pool(x)      # (B, C, 1)
-        x = x.squeeze(-1)            # (B, C)
-
-        # 输出未来序列
-        y = self.fc(x)               # (B, horizon * target_dim)
+        # 展平时间+通道维 → FC 输出
+        x = x.reshape(bsz, -1)               # (B, C * T)
+        y = self.fc(x)                       # (B, horizon * target_dim)
         y = y.reshape(bsz, self.horizon, self.target_dim)
 
         return y

@@ -43,7 +43,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("CNN-LSTM", "CNN_LSTM", "cnn_lstm")
+@register("CNN-LSTM")
 class CNNLSTMForecaster(nn.Module, TorchMixin):
     """
     CNN + LSTM 时间序列预测模型
@@ -77,6 +77,8 @@ class CNNLSTMForecaster(nn.Module, TorchMixin):
         self.horizon = horizon
         self.target_dim = target_dim
 
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
+
         # ===== CNN 特征提取 =====
         self.conv = nn.Conv1d(
             in_channels=input_dim,
@@ -108,6 +110,8 @@ class CNNLSTMForecaster(nn.Module, TorchMixin):
         """
 
         bsz = x.shape[0]
+
+        x = self.input_norm(x)
 
         # ===== CNN 提取局部特征 =====
         # (B, T, C) -> (B, C, T)

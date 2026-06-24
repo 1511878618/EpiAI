@@ -1,10 +1,18 @@
 """
 LightGBM-based single-model time series forecaster.
-"""
 
+输入输出：
+- 输入:  (N, lookback, input_dim)
+- 输出:  (N, horizon, target_dim)
+
+特点：
+- 使用 MultiOutputRegressor 包装（LightGBM 不支持原生多输出回归）
+- 自动构造时序特征名
+"""
 from __future__ import annotations
 
 import numpy as np
+from sklearn.multioutput import MultiOutputRegressor
 try:
     from lightgbm import LGBMRegressor
 except ImportError:
@@ -13,14 +21,13 @@ else:
     _HAS_LIGHTGBM = True
 
 
-
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("LGBM", "LightGBM", "lgbm")
+
+@register("LGBM")
 class LGBMSingleForecaster(SklearnMixin):
-    """
-    单模型 LightGBM 时间序列预测器。
+    """单模型 LightGBM 时间序列预测器。
 
     输入输出：
     - 输入:  (N, lookback, input_dim)
@@ -67,23 +74,13 @@ class LGBMSingleForecaster(SklearnMixin):
                 colsample_bytree=0.8,
                 random_state=42,
                 verbosity=-1,
+                device='gpu',
             )
 
-        self.model = LGBMRegressor(**lgbm_params)
+        self.model = MultiOutputRegressor(LGBMRegressor(**lgbm_params), n_jobs=-1)
 
     def _build_flatten_feature_names(self) -> list[str]:
-        """
-        构造 flatten 后的时序特征名。
-
-        例如：
-        lookback=3, input_feature_names=["temp", "rain"]
-        =>
-        [
-            "lag_2_temp", "lag_2_rain",
-            "lag_1_temp", "lag_1_rain",
-            "lag_0_temp", "lag_0_rain",
-        ]
-        """
+        """构造 flatten 后的时序特征名。"""
         names = []
         for t in range(self.lookback):
             lag = self.lookback - 1 - t
@@ -93,45 +90,36 @@ class LGBMSingleForecaster(SklearnMixin):
 
     def _flatten_x(self, x):
         x = np.asarray(x, dtype=np.float32)
-
         if x.ndim != 3:
             raise ValueError(
                 f"`x` must have shape (N, lookback, input_dim), got {x.shape}."
             )
-
         if x.shape[1] != self.lookback:
             raise ValueError(
                 f"lookback mismatch: expected {self.lookback}, got {x.shape[1]}."
             )
-
         if x.shape[2] != self.input_dim:
             raise ValueError(
                 f"input_dim mismatch: expected {self.input_dim}, got {x.shape[2]}."
             )
-
         return x.reshape(x.shape[0], -1)
 
     def _prepare_y(self, y):
         y = np.asarray(y, dtype=np.float32)
-
         if y.ndim == 2:
             y = y[..., None]
-
         if y.ndim != 3:
             raise ValueError(
                 f"`y` must have shape (N, horizon) or (N, horizon, target_dim), got {y.shape}."
             )
-
         if y.shape[1] != self.horizon:
             raise ValueError(
                 f"horizon mismatch: expected {self.horizon}, got {y.shape[1]}."
             )
-
         if y.shape[2] != self.target_dim:
             raise ValueError(
                 f"target_dim mismatch: expected {self.target_dim}, got {y.shape[2]}."
             )
-
         return y
 
     def _prepare_output_index(self, horizon_idx=0, target_idx=0) -> int:
@@ -146,32 +134,23 @@ class LGBMSingleForecaster(SklearnMixin):
         return horizon_idx * self.target_dim + target_idx
 
     def fit(self, x, y, val_x=None, val_y=None, verbose=False):
-        """
-        参数：
-        - x: (N, lookback, input_dim)
-        - y: (N, horizon) 或 (N, horizon, target_dim)
+        """LightGBM + MultiOutputRegressor 多输出训练。
 
-        注：LightGBM sklearn API 在多输出场景下不支持 eval_set，
+        注：MultiOutputRegressor 不支持 eval_set，
         `val_x` / `val_y` 保留仅用于接口一致性。
         """
         X = self._flatten_x(x)
         y = self._prepare_y(y)
         y_flat = y.reshape(y.shape[0], -1)
-
         self.model.fit(X, y_flat)
 
     def predict(self, x):
-        """
-        返回：
-        - preds: (N, horizon, target_dim)
-        """
+        """返回 preds: (N, horizon, target_dim)"""
         X = self._flatten_x(x)
         preds = self.model.predict(X)
         preds = np.asarray(preds, dtype=np.float32)
-
         if preds.ndim == 1:
             preds = preds[:, None]
-
         return preds.reshape(-1, self.horizon, self.target_dim)
 
     def get_flatten_feature_names(self) -> list[str]:

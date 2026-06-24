@@ -43,7 +43,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("MLP", "mlp")
+@register("MLP")
 class MLPForecaster(nn.Module, TorchMixin):
     def __init__(
         self,
@@ -60,6 +60,8 @@ class MLPForecaster(nn.Module, TorchMixin):
         self.horizon = horizon
         self.target_dim = target_dim
 
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
+
         self.net = nn.Sequential(
             nn.Linear(lookback * input_dim, hidden_dim),
             nn.ReLU(),
@@ -72,6 +74,7 @@ class MLPForecaster(nn.Module, TorchMixin):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, lookback, input_dim)
+        x = self.input_norm(x)
         bsz = x.shape[0]
         x = x.reshape(bsz, -1)
         y = self.net(x)

@@ -64,26 +64,27 @@ class TemporalBlock(nn.Module):
 
         self.conv1 = nn.Conv1d(in_ch, out_ch, kernel_size,
                                padding=padding, dilation=dilation)
+        self.bn1 = nn.BatchNorm1d(out_ch)
         self.conv2 = nn.Conv1d(out_ch, out_ch, kernel_size,
                                padding=padding, dilation=dilation)
+        self.bn2 = nn.BatchNorm1d(out_ch)
 
         self.downsample = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x):
         out = self.conv1(x)
         out = out[:, :, :x.size(2)]
+        out = self.bn1(out)
         out = torch.relu(out)
 
         out = self.conv2(out)
         out = out[:, :, :x.size(2)]
+        out = self.bn2(out)
 
         return torch.relu(out + self.downsample(x))
 
 
-from EpiAI.models.base import TorchMixin
-from EpiAI.models.registry import register
-
-@register("TCN", "tcn")
+@register("TCN")
 class TCNForecaster(nn.Module, TorchMixin):
     """
     Temporal Convolutional Network (TCN) for Time Series Forecasting.
@@ -134,6 +135,8 @@ class TCNForecaster(nn.Module, TorchMixin):
         self.network = nn.Sequential(*layers)
 
         self.fc = nn.Linear(channels[-1], horizon * target_dim)
+        self.input_norm = nn.LayerNorm(input_dim) if input_dim > 1 else nn.Identity()
+
         # ===== 基本结构参数 =====
         self.input_dim = input_dim
         self.lookback = lookback
@@ -143,6 +146,7 @@ class TCNForecaster(nn.Module, TorchMixin):
     def forward(self, x):
         B = x.shape[0]
 
+        x = self.input_norm(x)
         x = x.permute(0, 2, 1)  # (B,C,T)
         x = self.network(x)
 

@@ -131,10 +131,7 @@ class SeriesDecomp(nn.Module):
         return seasonal, trend
 
 
-from EpiAI.models.base import TorchMixin
-from EpiAI.models.registry import register
-
-@register("DLinear", "dlinear")
+@register("DLinear")
 class DLinearForecaster(nn.Module, TorchMixin):
     """
     基于序列分解的线性预测模型（DLinear 风格）

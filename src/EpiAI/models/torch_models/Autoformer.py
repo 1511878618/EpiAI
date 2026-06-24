@@ -57,7 +57,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("Autoformer", "autoformer")
+@register("Autoformer")
 class AutoformerForecaster(nn.Module, TorchMixin):
     """
     Paper link: https://openreview.net/pdf?id=I55UqU-M11y
@@ -121,8 +121,8 @@ class AutoformerForecaster(nn.Module, TorchMixin):
        # enc
         enc_out = self.enc_embedding(x_enc, None)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
-        # final
-        y = self.projection(enc_out).mean(dim=1)
+        # final: 取编码器最后时间步 → 投影到 horizon 步
+        y = self.projection(enc_out[:, -1, :])
         y = y.reshape(x_enc.shape[0], self.horizon, self.target_dim)
         return y 
  

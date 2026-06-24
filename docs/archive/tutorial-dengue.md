@@ -231,7 +231,7 @@ future_dates = pd.date_range(start=last_time + pd.DateOffset(months=1),
 
 if inferer.paradigm == "ts":
     fc = inferer.forecast(3)
-    future_pred = fc[:, 0, 0]
+    future_pred = np.asarray(fc).ravel()
 else:
     pred = inferer.predict(bundle.train_df.tail(15).copy()[bundle.feature_names])
     future_pred = pred[0, :, 0]

@@ -19,7 +19,7 @@ from sklearn.ensemble import RandomForestRegressor
 from EpiAI.models.base import SklearnMixin
 from EpiAI.models.registry import register
 
-@register("RF", "RandomForest", "random_forest")
+@register("RF")
 class RandomForestForecaster(SklearnMixin):
     """
     单模型 Random Forest 时间序列预测器（带 SHAP 可解释性）

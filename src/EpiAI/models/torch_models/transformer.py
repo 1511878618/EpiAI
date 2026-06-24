@@ -43,7 +43,7 @@ except ImportError:
 from EpiAI.models.base import TorchMixin
 from EpiAI.models.registry import register
 
-@register("Transformer", "transformer")
+@register("Transformer")
 class TransformerForecaster(nn.Module, TorchMixin):
     """
     基于 Transformer Encoder 的时间序列预测模型

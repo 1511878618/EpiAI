@@ -59,14 +59,14 @@ class BaseForecaster(ABC):
 
     # ── TS-specific (raw sequence) ────────────────────────────
 
-    def fit_sequence(self, y_train, X_train=None):
+    def fit_sequence(self, y_train, X_train=None, **kwargs):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement fit_sequence(). "
             f"Use fit() for window-based models."
         )
 
     def predict_sequence(self, y_test, X_test=None,
-                         update_state=True) -> np.ndarray:
+                         update_state=True, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
     def forecast(self, n_periods: int, X_future=None) -> np.ndarray:

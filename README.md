@@ -153,21 +153,21 @@ runtime.save("/tmp/runtime/")
 
 ### 深度学习（10 个）
 
-`MLP` · `LSTM` · `CNN` · `CNN-LSTM` · `ResNet` · `TCN` · `Transformer` · `DLinear` · `Autoformer` · `TimesNet`
+|`MLP` · `LSTM` · `CNN` · `CNN-LSTM` · `ResNet` · `TCN` · `Transformer` · `DLinear` · `Autoformer` · `TimesNet`
 
 ### 机器学习（6 个）
 
-`XGBoost` · `LightGBM` · `RandomForest` · `SVR` · `LinearReg` · `TabPFN`
+`RF` · `XGB` · `LGBM` · `SVR` · `LinearReg` · `TabPFN`
 
-### 时间序列（2 个）
+### 时间序列（6 个）
 
-`ARIMA` · `ETS`
+`ARIMA` · `ETS` · `Serfling` · `STLM` · `BSTS` · `Prophet`
 
 ```python
 from EpiAI.models.registry import list_models
 
-list_models()               # 全部 29+ 个别名
-list_models("torch")        # 仅深度学习
+|list_models()               # 全部 20+ 个模型
+|list_models("torch")        # 仅深度学习
 list_models("sklearn")      # 仅机器学习
 list_models("ts")           # 仅时间序列
 ```
