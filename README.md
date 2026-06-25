@@ -44,34 +44,50 @@ pip install -e ".[all]"                   # 全部
 
 ```python
 from EpiAI.dataset import ForecastPipeline
-from EpiAI.models.registry import get
+from EpiAI.models.registry import get, list_models
 from EpiAI.trainer import EpiAITrainer
 from EpiAI.inference import ModelVault, DeploymentRuntime
+import pandas as pd
 
-# 1. 数据管道（一行代码）
+# ── 1. 数据管道 ────────────────────────────────────
 bundle = ForecastPipeline.quick(
-    path="data.csv", time_col="time",
-    target_cols="cases", lookback=12, horizon=3,
+    path="data.csv",
+    time_col="time",
+    target_cols="cases",
+    lookback=12, horizon=3,
 )
+print(f"训练样本: {bundle.train_x.shape}")
 
-# 2. 训练 — 一键切换模型
-model = get("RF")(input_dim=bundle.n_features,
-                  lookback=12, horizon=3, target_dim=1)
-result = EpiAITrainer(model=model).fit(bundle)
-print(result.metrics)          # MAE / RMSE / PearsonR
+# ── 2. 训练多个模型 ────────────────────────────────
+results = {}
+for model_name in ("ETS", "RF", "LSTM"):
+    model = get(model_name)(
+        input_dim=bundle.n_features,
+        lookback=12, horizon=3, target_dim=1,
+        **(dict(seasonal_periods=12) if model_name == "ETS" else {}),
+    )
+    r = EpiAITrainer(model=model, verbose=False).fit(bundle)
+    results[model_name] = r
+    print(f"{model_name:5s} Pearson r = {r.metrics['PearsonR']['cases']:.3f}")
 
-# 3. 部署 — 多模型管理 + 预测
-vault = ModelVault.from_results({"RF": result}, bundle)
-runtime = DeploymentRuntime(vault=vault, data_table=bundle.full_df)
-preds = runtime.predict(horizon=12)    # pd.DataFrame
+# ── 3. 多模型管理 ──────────────────────────────────
+vault = ModelVault.from_results(results, bundle)
+vault.summary()          # 对比表
+print(f"最佳模型: {vault.best('PearsonR')}")
+
+# ── 4. 生产部署 + 预测 ────────────────────────────
+history = pd.concat([bundle.train_df, bundle.val_df, bundle.test_df])
+runtime = DeploymentRuntime(vault=vault, data_table=history)
+runtime.update_ts()                     # TS 模型追到最新
+preds = runtime.predict(horizon=12)     # pd.DataFrame
 print(preds)
 
-# 4. 风险预警
+# ── 5. 风险预警 ────────────────────────────────────
 from EpiAI.risk import RiskScorer, WarningRule
 scorer = RiskScorer(method="quantile").fit(runtime.data_table)
-rule = WarningRule(ensemble="max")
-report = rule.evaluate(scorer.score_df(preds))
-print(rule.report(report))
+risk_df = scorer.score_df(preds)
+report = WarningRule(ensemble="max").evaluate(risk_df)
+print(WarningRule(ensemble="max").report(report))
 ```
 
 ---
