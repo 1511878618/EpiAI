@@ -1,5 +1,29 @@
 # 更新日志
 
+## [v0.7.0] — 2026-06-24
+
+### 新增
+- **风险预警模块** (`EpiAI.risk`)：RiskScorer（4 种评分方法）+ WarningRule（3 种融合策略 + 连续升级检测）
+- **DeploymentRuntime 重构**：`predict(horizon=N)` 返回 pd.DataFrame，移除 `predict_range` / `backtest` / `pred_matrix`
+- **data_table 构造参数**：`DeploymentRuntime(vault, data_table=history_df)`，`_history_end_time` 自动推断
+- **update_ts()**：TS 模型滑动窗口重训 + transform 自动处理 + `_last_ds` 自动更新
+- **全 torch 模型输入归一化**：`nn.LayerNorm(input_dim)` 开头（input_dim>1 时生效）
+- **BSTS 重写**：PyMC MCMC 完整实现（niter+burn+后验投影预测 + 置信区间）
+- **模型清单文档**：`docs/guides/models.md`，22 个模型输入/输出/场景速查
+
+### 修复
+- TCN 时间塌陷：无归一化 → 添加 `BatchNorm1d` 到 `TemporalBlock`
+- inverse_predictions 只反变换 step 0：改为反变换全部 horizon 步
+- ARIMA/STLM `forecast()` 使用 `predict(n_periods=N)` 导致 NaN：实际为正确方法，保持 `predict(n_periods=...)`
+- 时序模型 `forecast()` 因 gap 过长收敛到均值：文档说明需先调 `update_ts()`
+- MLP `input_norm` 被重复添加两次（`LayerNorm(1)` 输入单特征时输出全零 → PearsonR=NaN）
+- LGBM `MultiOutputRegressor` 性能：添加 `device='gpu'` 启用 GPU 训练
+
+### 变更
+- `TrainResult`：移除 `pred_detail` 字段
+- `DeploymentRuntime` 文档重构：api-deployment.md / deployment_runtime.md / guides/deployment.md
+- `inverse_predictions` 改为反变换全部 horizon 步（影响 `_build_result` + `InferencePipeline`）
+
 ## [v0.6.0] — 2026-06-17
 
 ### 修复
