@@ -8,6 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.7.0-blue.svg)](https://pypi.org/project/EpiAI/)
 
 **EpiAI** 是一个端到端的传染病爆发预测框架，专为疫情监测与预警设计。
 支持 **22 个内置模型**（深度学习 + 机器学习 + 时间序列），提供从数据处理、模型训练、多模型管理到生产部署和风险预警的完整链路。
@@ -279,15 +280,21 @@ from EpiAI.dataset.base import Transform, SplitStrategy
 |------|------|------|
 | `pandas`, `numpy` | 数据处理 | ✅ |
 | `scikit-learn` | 基础模型 / 评估 | ✅ |
-| `torch` | 深度学习 | ❌ 可选 |
-| `xgboost` | XGB 模型 | ❌ 可选 |
-| `lightgbm` | LGBM 模型 | ❌ 可选 |
-| `pmdarima` | ARIMA | ❌ 可选 |
-| `statsmodels` | ETS / STLM | ❌ 可选 |
-| `prophet` | Prophet | ❌ 可选 |
-| `pymc` | BSTS (MCMC) | ❌ 可选 |
-| `tabpfn` | TabPFN | ❌ 可选 |
+| `torch` | 深度学习 (LSTM/CNN/TCN/...) | ❌ `[torch]` |
+| `xgboost` | XGB 模型 | ❌ `[xgb]` |
+| `lightgbm` | LGBM 模型 | ❌ `[lgbm]` |
+| `pmdarima` | ARIMA | ❌ `[ts]` |
+| `statsmodels` | ETS / STLM | ❌ `[ts]` |
+| `prophet` | Prophet | ❌ `[prophet]` |
+| `pymc` | BSTS (MCMC) | ❌ `[pymc]` |
+| `tabpfn` | TabPFN | ❌ `[tabpfn]` |
 
+```bash
+pip install EpiAI                      # 基础（sklearn 模型）
+pip install EpiAI[torch]               # 加深度学习
+pip install EpiAI[xgb,lgbm,ts]         # 加树模型 + 时序
+pip install EpiAI[all]                 # 全部
+```
 ---
 
 ## 开源协议
