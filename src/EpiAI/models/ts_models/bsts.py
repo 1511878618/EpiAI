@@ -216,7 +216,7 @@ class BSTSForecaster(TSMixin):
             self.fit_sequence(y)
         return pred
 
-    def forecast(self, n_periods: int, X_future=None):
+    def forecast(self, n_periods: int, X_future=None, **kwargs):
         """Forecast future values. Returns (n_periods, 1, 1)."""
         if _HAS_PYMC and self._trace is not None:
             pred = self._project_forward(n_periods)

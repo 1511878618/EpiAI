@@ -36,8 +36,7 @@ import numpy as np
 import pandas as pd
 
 from EpiAI.dataset import (
-    ForecastPipeline, CsvLoader, TimeSplit, Compose, StandardScaler,
-    SlidingWindow,
+    ForecastPipeline, CsvLoader, TimeSplit, SlidingWindow,
 )
 from EpiAI.dataset.pipeline import PipelineBundle
 from EpiAI.inference import DeploymentRuntime, ModelVault
@@ -121,7 +120,7 @@ class ForecastTask:
     split : Split, optional
         Train/val/test split.  Default: ``TimeSplit(train_ratio=0.7, val_ratio=0.15)``.
     transforms : Compose or None, optional
-        Default: ``Compose([StandardScaler()])`` applied to all columns.
+        Default: ``None`` (no transformation).
     """
 
     def __init__(
@@ -143,7 +142,7 @@ class ForecastTask:
         self.horizon = horizon
         self.lookback = lookback
         self.split = split or TimeSplit(train_ratio=0.7, val_ratio=0.15)
-        self.transforms = transforms or Compose([StandardScaler()])
+        self.transforms = transforms
         self.freq = freq
 
         # If freq not provided, infer from data

@@ -98,7 +98,7 @@ class ETSForecaster(TSMixin):
             "abs_error": np.abs(y_test - pred),
         })
 
-    def forecast(self, n_periods: int):
+    def forecast(self, n_periods: int, X_future=None, **kwargs):
         """对未来未知值做纯预测（无 y_test）。"""
         if self._result is None:
             raise RuntimeError("Model not fitted.")

@@ -169,7 +169,7 @@ class STLMARIMAForecaster(TSMixin):
 
         return pred
 
-    def forecast(self, n_periods: int, X_future=None):
+    def forecast(self, n_periods: int, X_future=None, **kwargs):
         """Forecast future values.
 
         Parameters
