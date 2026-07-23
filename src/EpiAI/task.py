@@ -408,17 +408,33 @@ class ForecastTask:
 
     def _attach_risk(self, runtime: DeploymentRuntime,
                      risk: str | list[str] | object | list[object]) -> None:
-        """Attach one or more RiskScorers to the runtime."""
+        """Attach one or more RiskScorers to the runtime.
+
+        ``risk`` 支持以下格式::
+
+            risk="quantile"              # 多级风险 0-3（默认 70/90/95% 分位）
+            risk="quantile@0.80"         # 二分类预警（预测 > 80% 分位 → 警报）
+            risk="zscore@1.0"            # 二分类预警（预测 > 均值 + 1σ → 警报）
+            risk="threshold@500"         # 二分类预警（预测 > 500 → 警报）
+            risk=["quantile@0.80", "zscore@1.5"]  # 多个二分类预警
+        """
         from EpiAI.risk import RiskScorer
 
-        # Normalize to list of (name, method_or_scorer)
         risk_list: list[tuple[str, str | RiskScorer]] = []
         items = risk if isinstance(risk, list) else [risk]
+
         for item in items:
             if isinstance(item, str):
-                risk_list.append((item, item))
+                # 解析 "method@level" 或 "method"
+                if "@" in item:
+                    method, level_str = item.split("@", 1)
+                    level = float(level_str)
+                    # 构造带 @ 格式的 scorer 名称
+                    name = item.replace("@", "_")
+                    risk_list.append((name, (method, level)))
+                else:
+                    risk_list.append((item, item))
             elif isinstance(item, RiskScorer):
-                # Derive name from the scorer's method attribute
                 name = getattr(item, "method", "risk")
                 risk_list.append((name, item))
             else:
@@ -426,11 +442,30 @@ class ForecastTask:
 
         for name, spec in risk_list:
             if isinstance(spec, str):
+                # 纯方法名 — 多级风险（原行为）
                 scorer = RiskScorer(
                     method=spec,
                     time_col=self.time_col,
                     value_col=self.target[0],
                 )
+            elif isinstance(spec, tuple):
+                # (method, level) — 二分类预警
+                method, level = spec
+                bounds_map = {
+                    "quantile": [level, level, level],
+                    "zscore": [level, level, level],
+                    "threshold": [level, level, level],
+                }
+                kwargs = {
+                    "method": method,
+                    "quantile_bounds": bounds_map["quantile"],
+                    "zscore_bounds": bounds_map["zscore"],
+                    "thresholds": bounds_map["threshold"],
+                    "binary": True,
+                    "time_col": self.time_col,
+                    "value_col": self.target[0],
+                }
+                scorer = RiskScorer(**kwargs)
             else:
                 scorer = spec
             scorer.fit(runtime.data_table)

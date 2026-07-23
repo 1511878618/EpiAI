@@ -65,12 +65,14 @@ class RiskScorer:
         pct_bounds: list[float] | None = None,
         lookback: int = 1,
         same_period: bool = True,
+        binary: bool = False,
     ):
         self.method = method
         self.time_col = time_col
         self.value_col = value_col
         self.lookback = lookback
         self.same_period = same_period
+        self.binary = binary
 
         self._bounds = {
             "quantile": quantile_bounds or [0.70, 0.90, 0.95],
@@ -152,16 +154,20 @@ class RiskScorer:
     def _score_quantile(self, value: float, time: pd.Timestamp) -> int:
         month = time.month
         q = self._baseline.get(month, np.array([float("inf")]) * 3)
+        if self.binary:
+            return 1 if value >= q[0] else 0
         if value >= q[2]:
-            return 3  # >95% 极高
+            return 3
         elif value >= q[1]:
-            return 2  # 90-95% 高
+            return 2
         elif value >= q[0]:
-            return 1  # 70-90% 中
-        return 0  # <70% 低
+            return 1
+        return 0
 
     def _score_threshold(self, value: float) -> int:
         t = self._bounds["threshold"]
+        if self.binary:
+            return 1 if value >= t[0] else 0
         if value >= t[2]:
             return 3
         elif value >= t[1]:
@@ -175,6 +181,8 @@ class RiskScorer:
         mean_, std_ = self._baseline.get(month, [0, 1])
         z = (value - mean_) / std_
         b = self._bounds["zscore"]
+        if self.binary:
+            return 1 if z >= b[0] else 0
         if z >= b[2]:
             return 3
         elif z >= b[1]:
