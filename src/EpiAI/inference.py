@@ -365,86 +365,6 @@ class InferencePipeline:
 
         return _inv(preds, self.target_names, self.transforms, y_true=None)
 
-    # ── Retrain all models on full data ──────────────────────────
-
-    def retrain_all(self) -> None:
-        """用 data_table 中的全部数据重新训练所有模型并更新 vault."""
-        if self.data_table.empty:
-            raise RuntimeError("data_table is empty.")
-
-        df = self.data_table.copy()
-        tc = self.time_col
-        # 读取任意模型的 target/feature 列名
-        first = next(iter(self.vault.models.values()))
-        tgt, feat = first.target_names, first.feature_names
-
-        import tempfile
-        from EpiAI.dataset import (ForecastPipeline, CsvLoader, TimeSplit,
-                                    Compose, SlidingWindow)
-        from EpiAI.trainer import EpiAITrainer
-        from EpiAI.models.registry import get
-
-        for name, inferer in list(self.vault.models.items()):
-            print(f"  重训 {name} ...", end=" ", flush=True)
-            try:
-                if inferer.paradigm == "ts":
-                    self._retrain_ts(name, inferer, df)
-                else:
-                    self._retrain_window(name, inferer, df, tgt, feat)
-                print("OK")
-            except Exception as e:
-                print(f"FAILED: {e}")
-
-        self._history_end_time = pd.to_datetime(df[tc].iloc[-1])
-        print(f"\n全部重训完成 -> 训练结束时间: {self._history_end_time.date()}")
-
-    def _retrain_window(self, name, inferer, df, tgt, feat):
-        L, H = inferer.lookback, inferer.horizon
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
-            df.to_csv(tmp.name, index=False);  p = tmp.name
-        pipeline = ForecastPipeline(
-            loader=CsvLoader(time_col=self.time_col, target_cols=tgt,
-                             feature_cols=feat),
-            split=TimeSplit(train_ratio=1.0, val_ratio=0.0),
-            transforms=inferer.transforms,
-            window=SlidingWindow(lookback=L, horizon=H),
-        )
-        bundle = pipeline.run(p)
-        os.unlink(p)
-
-        cls = get(inferer.model_config.get("register_name", name))
-        kw = inferer.model_config.get("init_kwargs", {})
-        model = cls(input_dim=bundle.n_features, lookback=L,
-                    horizon=H, target_dim=1, **kw)
-        tr = EpiAITrainer(model=model, verbose=False).fit(bundle)
-
-        new_pip = InferencePipeline(
-            model=model, transforms=inferer.transforms,
-            lookback=L, horizon=H,
-            feature_names=feat, target_names=tgt,
-            paradigm=model.paradigm(),
-        )
-        new_pip.model_config = inferer.model_config
-        self.vault.models[name] = new_pip
-
-    def _retrain_ts(self, name, inferer, df):
-        y_full = df[inferer.target_names].values.squeeze().astype(float)
-        dates = pd.to_datetime(df[self.time_col]).values
-        cls = get(inferer.model_config.get("register_name", name))
-        kw = inferer.model_config.get("init_kwargs", {})
-        model = cls(**kw)
-        model.fit_sequence(y_full, dates=dates)
-
-        new_pip = InferencePipeline(
-            model=model, transforms=inferer.transforms,
-            lookback=inferer.lookback, horizon=inferer.horizon,
-            feature_names=inferer.feature_names,
-            target_names=inferer.target_names, paradigm="ts",
-        )
-        new_pip.model_config = inferer.model_config
-        self.vault.models[name] = new_pip
-
     def __repr__(self) -> str:
         return (
             f"InferencePipeline(paradigm={self.paradigm}, "
@@ -1032,6 +952,86 @@ class DeploymentRuntime:
             f"DeploymentRuntime({len(self.vault.models)} models, "
             f"{len(self.data_table)} rows)"
         )
+
+    # ── Refit on full data ────────────────────────────────────────
+
+    def refit(self, verbose: bool = True) -> None:
+        """用 ``data_table`` 中的全部数据重新训练所有模型。
+
+        训练完成后，模型内部状态（``_last_ds``、季节性成分等）
+        更新至最新时间点。
+
+        Parameters
+        ----------
+        verbose : bool, default True
+            是否打印每个模型的重训状态。
+        """
+        import inspect
+
+        dt = self.data_table
+        if dt.empty:
+            raise RuntimeError("data_table 为空，无法重训。")
+
+        for name, inferer in self.vault.models.items():
+            if verbose:
+                print(f"  refit {name} ...", end=" ", flush=True)
+            try:
+                # 1. 从当前模型提取构造参数，重建新实例
+                model_cls = type(inferer.model)
+                sig = inspect.signature(model_cls.__init__)
+                init_params = {}
+                for pname in list(sig.parameters.keys())[1:]:
+                    if hasattr(inferer.model, pname):
+                        init_params[pname] = getattr(inferer.model, pname)
+                new_model = model_cls(**init_params)
+
+                # 2. 准备全量数据
+                y_raw = dt[inferer.target_names].values.squeeze().astype(float)
+                dates = pd.to_datetime(dt[self.time_col]).values
+                feat_cols = inferer.feature_names or []
+
+                # 3. 变换（data_table 是原始尺度）
+                if inferer.transforms is not None:
+                    tn = inferer.target_names[0] if len(inferer.target_names) == 1 else inferer.target_names
+                    y_df = pd.DataFrame({tn: y_raw} if isinstance(tn, str)
+                                        else {t: y_raw[:, i] for i, t in enumerate(tn)})
+                    y_t = inferer.transforms.transform(y_df)
+                    y_full = y_t.values.squeeze().astype(float)
+                else:
+                    y_full = y_raw
+
+                # 4. 训练
+                if inferer.paradigm == "ts":
+                    new_model.fit_sequence(y_full, dates=dates)
+                    new_model._last_ds = pd.to_datetime(dates[-1])
+                else:
+                    from EpiAI.dataset.transforms import build_windows
+                    X_raw = dt[feat_cols].values.astype(float) if feat_cols else None
+                    win_X, win_y, _ = build_windows(
+                        y_full, inferer.lookback, inferer.horizon, X=X_raw,
+                    )
+                    new_model.fit(win_X, win_y)
+
+                # 5. 替换为新的训练后模型
+                inferer.model = new_model
+                if verbose:
+                    print("OK")
+            except Exception as e:
+                if verbose:
+                    print(f"FAILED: {e}")
+
+        # 重新拟合风险基线
+        if self.risk_scorer is not None:
+            try:
+                self.risk_scorer.fit(dt)
+                if verbose:
+                    print("  risk_scorer refit OK")
+            except Exception as e:
+                if verbose:
+                    print(f"  risk_scorer refit FAILED: {e}")
+
+        if verbose:
+            print(f"\n全部重训完成，共 {len(self.vault.models)} 个模型。")
 
 
 __all__ = ["InferencePipeline", "ModelVault", "DeploymentRuntime",
