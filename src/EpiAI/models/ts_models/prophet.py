@@ -27,6 +27,10 @@ except ImportError:
 
 @register("Prophet")
 class ProphetForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = True
+
     """Facebook Prophet forecaster.
 
     Prophet is a decomposable time series model with trend,

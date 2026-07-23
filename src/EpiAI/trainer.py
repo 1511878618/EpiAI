@@ -258,23 +258,28 @@ class EpiAITrainer:
         if train_dates is not None and len(train_dates) > 0:
             self.model._last_ds = pd.to_datetime(train_dates[-1])
 
-        # Try with X features first, fall back to univariate
-        try:
-            self.model.fit_sequence(y_train, X_train, dates=train_dates)
-            # 传真实 y_test（ARIMA 的 rolling-origin 需要真实值做滚动更新）
-            preds = self.model.predict_sequence(
-                y_test, X_test, update_state=False,
-                dates=test_dates,
+        # Check how many targets this TS model supports
+        n_targets = len(bundle.target_names)
+        sup = getattr(self.model, "target_dim_supported", 1)
+        if sup != "n" and n_targets != sup:
+            raise ValueError(
+                f"{type(self.model).__name__} supports "
+                f"{'univariate' if sup == 1 else f'{sup}-variable'} targets, "
+                f"got {n_targets} target(s): {bundle.target_names}. "
+                f"TS models are typically univariate; "
+                f"train one model per target."
             )
-        except (ValueError, TypeError) as e:
-            if "X" in str(e) or "exogenous" in str(e) or "X_train" in str(e):
-                self.model.fit_sequence(y_train, None, dates=train_dates)
-                preds = self.model.predict_sequence(
-                    y_test, None, update_state=False,
-                    dates=test_dates,
-                )
-            else:
-                raise
+
+        # Drop X if the model does not support exogenous features
+        if not getattr(self.model, "exogenous_supported", False):
+            X_train = X_test = None
+
+        # Fit and predict
+        self.model.fit_sequence(y_train, X_train, dates=train_dates)
+        preds = self.model.predict_sequence(
+            y_test, X_test, update_state=False,
+            dates=test_dates,
+        )
 
         # preds 已直接与测试期对齐（无 gap 需要截取）
 

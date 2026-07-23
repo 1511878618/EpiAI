@@ -11,6 +11,10 @@ from EpiAI.models.registry import register
 
 @register("ETS")
 class ETSForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = False
+
     """
     ETS (Error-Trend-Seasonality) forecaster.
 

@@ -14,11 +14,12 @@ Usage::
     model = Cls(input_dim=8, ...)
 
     list_models("torch")            # → ["cnn", "lstm", ...]
+    list_models("ts", exogenous=True)  # → TS models that accept X
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, List, Optional, Type
+from typing import TYPE_CHECKING, Iterable, List, Literal, Optional, Type
 
 if TYPE_CHECKING:
     from .base import BaseForecaster
@@ -54,20 +55,53 @@ def get(name: str) -> Type["BaseForecaster"]:
     return cls
 
 
-def list_models(paradigm: Optional[str] = None) -> List[str]:
-    """Return registered model names, optionally filtered by paradigm.
+def list_models(
+    paradigm: Optional[str] = None,
+    target_dim: Optional[int | Literal["n"]] = None,
+    exogenous: Optional[bool] = None,
+) -> List[str]:
+    """Return registered model names, optionally filtered by paradigm / capabilities.
 
     Parameters
     ----------
     paradigm : str or None
         One of ``"torch"``, ``"sklearn"``, ``"ts"``, or ``None`` (all).
+    target_dim : int, ``"n"``, or None
+        If set, only models whose ``target_dim_supported`` matches.
+        ``"n"`` matches any multi-variable model.  Non-TS paradigms
+        are always excluded from this filter (they handle multi-target
+        via their window mechanism).
+    exogenous : bool or None
+        If set, only models whose ``exogenous_supported`` matches.
     """
-    if paradigm is None:
-        return sorted(_registry.keys())
-    return sorted(
-        k for k, v in _registry.items()
-        if v.paradigm() == paradigm
-    )
+    results: list[tuple[str, Type[BaseForecaster]]] = []
+
+    for k, v in _registry.items():
+        # ── Paradigm filter ─────────────────────────────────────
+        if paradigm is not None and v.paradigm() != paradigm:
+            continue
+
+        # ── Capability filters (TS-only; other paradigms pass) ──
+        if target_dim is not None:
+            if v.paradigm() != "ts":
+                continue  # non-TS models handle multi-target natively
+            sup = getattr(v, "target_dim_supported", 1)
+            if target_dim == "n":
+                if sup != "n":
+                    continue
+            else:
+                if sup != "n" and sup != target_dim:
+                    continue
+
+        if exogenous is not None:
+            if v.paradigm() != "ts":
+                continue
+            if getattr(v, "exogenous_supported", False) != exogenous:
+                continue
+
+        results.append((k, v))
+
+    return sorted(k for k, _ in results)
 
 
 __all__ = ["register", "get", "list_models"]

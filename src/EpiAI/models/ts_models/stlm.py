@@ -31,6 +31,10 @@ except ImportError:
 
 @register("STLM")
 class STLMARIMAForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = False
+
     """STL decomposition + ARIMA on seasonally-adjusted component.
 
     Parameters

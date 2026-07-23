@@ -145,7 +145,22 @@ class SklearnMixin(BaseForecaster):
 
 
 class TSMixin(BaseForecaster):
-    """Mixin for time-series statistical models."""
+    """Mixin for time-series statistical models.
+
+    Subclasses **must** set the capability declarations to reflect
+    what inputs they accept.  The ``EpiAITrainer`` checks these
+    before calling ``fit_sequence`` / ``predict_sequence``.
+    """
+
+    # ── Capability declarations (override in subclasses) ──────
+    target_dim_supported: int | Literal["n"] = 1
+    """Number of concurrent target variables this model supports.
+
+    * ``1`` — univariate only (ARIMA, ETS, Theta, …)
+    * ``"n"`` — any positive integer (VAR, VARMAX, …)
+    """
+    exogenous_supported: bool = False
+    """Whether the model accepts exogenous features (``X``)."""
 
     @classmethod
     def paradigm(cls) -> Literal["ts"]:

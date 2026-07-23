@@ -13,8 +13,13 @@ from EpiAI.models.registry import register
 
 @register("ARIMA")
 class AutoARIMAXRollingForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = True
+
     """
     Auto-ARIMA / ARIMAX / SARIMAX rolling-origin forecaster.
+
     Note: SARIMAX 会需要传入 X_train
 
     Core logic

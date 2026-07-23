@@ -18,6 +18,10 @@ from EpiAI.models.registry import register
 
 @register("Serfling")
 class SerflingForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = False
+
     """Serfling regression: trend + Fourier seasonal terms.
 
     Parameters

@@ -31,6 +31,10 @@ except ImportError:
 
 @register("BSTS")
 class BSTSForecaster(TSMixin):
+    # ── Capability declarations ──────────────────────────────────
+    target_dim_supported = 1
+    exogenous_supported = False
+
     """Bayesian Structural Time Series (local level + seasonal).
 
     Mirrors R's ``bsts::AddLocalLevel() + AddSeasonal()`` with MCMC sampling.
