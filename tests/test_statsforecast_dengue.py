@@ -70,16 +70,16 @@ def test_01_data_loaded():
 
 
 def test_02_model_registration():
-    """All 33 stats/ models registered, with correct capabilities."""
-    names = sorted(n for n in list_models() if n.startswith("stats/"))
-    assert len(names) == 33, f"Expected 33 stats/ models, got {len(names)}"
+    """All 33 sf_ models registered, with correct capabilities."""
+    names = sorted(n for n in list_models() if n.startswith("sf_"))
+    assert len(names) == 33, f"Expected 33 sf_ models, got {len(names)}"
 
     # Spot-check capabilities
-    assert get("stats/autoarima").exogenous_supported == True
-    assert get("stats/autoets").exogenous_supported == False
-    assert get("stats/arima").exogenous_supported == True
-    assert get("stats/naive").exogenous_supported == False
-    assert get("stats/garch").exogenous_supported == False
+    assert get("sf_auto_arima").exogenous_supported == True
+    assert get("sf_auto_ets").exogenous_supported == False
+    assert get("sf_arima").exogenous_supported == True
+    assert get("sf_naive").exogenous_supported == False
+    assert get("sf_garch").exogenous_supported == False
 
     print(f"  ✅ {len(names)} models registered, capabilities correct")
 
@@ -90,9 +90,9 @@ def test_03_standalone_fit_forecast():
     y = df["cases"].values
     train, test = y[:360], y[360:]
 
-    candidates = ["stats/autoarima", "stats/autoets", "stats/theta",
-                  "stats/mstl", "stats/hw", "stats/naive", "stats/snaive",
-                  "stats/histavg"]
+    candidates = ["sf_auto_arima", "sf_auto_ets", "sf_theta",
+                  "sf_mstl", "sf_holt_winters", "sf_naive", "sf_seasonal_naive",
+                  "sf_historic_average"]
 
     for name in candidates:
         model = get(name)(season_length=12)
@@ -117,7 +117,7 @@ def test_04_trainer_pipeline():
         window=SlidingWindow(lookback=12, horizon=3),
     ).run(csv_path)
 
-    models_to_test = ["stats/autoarima", "stats/autoets", "stats/theta"]
+    models_to_test = ["sf_auto_arima", "sf_auto_ets", "sf_theta"]
     metrics = []
 
     for name in models_to_test:
@@ -155,7 +155,7 @@ def test_05_trainer_multivariate_rejection():
         window=SlidingWindow(lookback=12, horizon=3),
     ).run(csv_path)
 
-    model = get("stats/autoets")(season_length=12)
+    model = get("sf_auto_ets")(season_length=12)
     try:
         EpiAITrainer(model, verbose=False).fit(bundle)
         assert False, "Should have raised ValueError for multi-target"
@@ -171,7 +171,7 @@ def test_06_deployment_workflow():
     y_test = df["cases"].values[360:]
 
     # Train
-    model = get("stats/autoets")(season_length=12)
+    model = get("sf_auto_ets")(season_length=12)
     model.fit_sequence(y_train)
 
     # Forecast test period — should at least beat the mean baseline
