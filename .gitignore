@@ -113,3 +113,4 @@ temp/
 # node (hermes-agent lsp)
 node_modules/
 *.ipynb
+!tutorial/*.ipynb
