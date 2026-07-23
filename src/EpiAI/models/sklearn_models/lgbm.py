@@ -66,15 +66,17 @@ class LGBMSingleForecaster(SklearnMixin):
 
         if lgbm_params is None:
             lgbm_params = dict(
-                n_estimators=200,
+                n_estimators=20,
                 learning_rate=0.05,
                 max_depth=-1,
-                num_leaves=31,
+                num_leaves=7,
                 subsample=0.8,
+                min_data_in_leaf=5,
+                min_child_samples=5,
                 colsample_bytree=0.8,
                 random_state=42,
                 verbosity=-1,
-                device='cuda',
+                device='cpu',
             )
 
         self.model = MultiOutputRegressor(LGBMRegressor(**lgbm_params), n_jobs=-1)
