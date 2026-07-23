@@ -702,6 +702,7 @@ class DeploymentRuntime:
         self._time_delta = pd.tseries.frequencies.to_offset(time_unit)
         self._path: Optional[Path] = None
         self.data_table: pd.DataFrame = data_table.copy() if data_table is not None else pd.DataFrame()
+        self.risk_scorer: Optional[object] = None  # set externally by ForecastTask
         self._history_end_time: Optional[pd.Timestamp] = (
             pd.to_datetime(self.data_table[self.time_col].iloc[-1])
             if not self.data_table.empty else None
@@ -786,7 +787,22 @@ class DeploymentRuntime:
                 results[name] = pred
             except Exception:
                 results[name] = np.full(horizon, np.nan)
-        return pd.DataFrame(results, index=future.strftime("%Y-%m"))
+
+        result_df = pd.DataFrame(results, index=future)
+
+        # Risk scoring — attach as additional columns
+        if self.risk_scorer is not None:
+            for col in result_df.columns:
+                risk_col = f"{col}_risk"
+                vals = result_df[col].values
+                risk_vals = np.array([
+                    self.risk_scorer.score(v, t)
+                    for v, t in zip(vals, result_df.index)
+                ], dtype=int)
+                result_df[risk_col] = risk_vals
+
+        result_df.index.name = self.time_col
+        return result_df.reset_index()
 
     # ── Feed ───────────────────────────────────────────────────
 

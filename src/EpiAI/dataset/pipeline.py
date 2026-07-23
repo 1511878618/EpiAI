@@ -66,6 +66,9 @@ class PipelineBundle:
     ``feature_names``  List of input feature column names.
     ``target_names``   List of target column names.
     ``transforms``     Fitted ``Compose`` (or ``None``).
+    ``freq``           Pandas frequency string (e.g. ``\"MS\"``, ``\"D\"``).
+                       Used by models to set ``season_length`` and by
+                       ``DeploymentRuntime`` for time continuity checks.
     ================  ============================================
 
     .. rubric:: Convenience properties
@@ -98,6 +101,9 @@ class PipelineBundle:
     target_names: List[str] = field(default_factory=list)
 
     transforms: Optional[Compose] = None
+
+    freq: Optional[str] = None
+    """Pandas frequency string (e.g. ``\"MS\"``, ``\"D\"``)."""
 
     train_df: Optional[pd.DataFrame] = None
     val_df: Optional[pd.DataFrame] = None
