@@ -945,6 +945,10 @@ class DeploymentRuntime:
         self._path = path
         self._save_data_table(path)
         self.vault.save(str(path / "vault"))
+        # Save risk scorer if attached
+        if self.risk_scorer is not None:
+            with open(path / "risk_scorer.pkl", "wb") as f:
+                pickle.dump(self.risk_scorer, f)
         meta = {
             "time_col": self.time_col,
             "time_unit": self.time_unit,
@@ -987,6 +991,12 @@ class DeploymentRuntime:
             csv_path = path / "data_table.csv"
             if csv_path.exists():
                 runtime.data_table = pd.read_csv(csv_path)
+
+        # Restore risk scorer if available
+        risk_path = path / "risk_scorer.pkl"
+        if risk_path.exists():
+            with open(risk_path, "rb") as f:
+                runtime.risk_scorer = pickle.load(f)
 
         return runtime
 

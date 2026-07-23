@@ -198,4 +198,10 @@ def register_backend(
     _BackendModel.__module__ = __name__
 
     register(*reg_names)(_BackendModel)
+
+    # Make the class accessible for pickle (pickle needs module-level lookup)
+    import sys
+    module = sys.modules[__name__]
+    setattr(module, _BackendModel.__name__, _BackendModel)
+
     return _BackendModel
