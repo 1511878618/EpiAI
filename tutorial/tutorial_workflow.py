@@ -139,12 +139,15 @@ def load_and_predict():
     print()
 
     print("=" * 50)
-    print("服务器: 模拟新数据到达 → 追加 → 再预测")
+    print("服务器: 模拟新数据到达 → 追加 → refit → 再预测")
     print("=" * 50)
     # 模拟 2026 年 5 月的新观测
     new_row = pd.DataFrame({"time": [pd.Timestamp("2026-05-01")], "cases": [150.0]})
     runtime.feed(new_row)
     print(f"  已追加新数据，当前 {len(runtime.data_table)} 行")
+
+    # 重训所有模型（用全量数据）
+    runtime.refit(verbose=True)
     print()
 
     report2 = runtime.predict(horizon=6)

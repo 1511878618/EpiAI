@@ -636,7 +636,7 @@ class DeploymentRuntime:
         self._time_delta = pd.tseries.frequencies.to_offset(time_unit)
         self._path: Optional[Path] = None
         self.data_table: pd.DataFrame = data_table.copy() if data_table is not None else pd.DataFrame()
-        self.risk_scorer: Optional[object] = None  # set externally by ForecastTask
+        self.risk_scorers: dict[str, object] = {}  # name → RiskScorer instance
         self._history_end_time: Optional[pd.Timestamp] = (
             pd.to_datetime(self.data_table[self.time_col].iloc[-1])
             if not self.data_table.empty else None
@@ -737,13 +737,15 @@ class DeploymentRuntime:
             result_df[f"{mname}_lo"] = bounds["lower"]
             result_df[f"{mname}_hi"] = bounds["upper"]
 
-        # Risk scoring — attach as additional columns
-        if self.risk_scorer is not None:
-            for col in result_df.columns:
-                risk_col = f"{col}_risk"
+        # Risk scoring — attach as additional columns (one per scorer)
+        model_cols = set(results.keys())  # only model prediction columns, not CI/risk
+        for sname, scorer in self.risk_scorers.items():
+            suffix = f"_{sname}" if sname != "risk" else "_risk"
+            for col in model_cols:
+                risk_col = f"{col}{suffix}"
                 vals = result_df[col].values
                 risk_vals = np.array([
-                    self.risk_scorer.score(v, t)
+                    scorer.score(float(v), t)
                     for v, t in zip(vals, result_df.index)
                 ], dtype=int)
                 result_df[risk_col] = risk_vals
@@ -892,10 +894,11 @@ class DeploymentRuntime:
         self._path = path
         self._save_data_table(path)
         self.vault.save(str(path / "vault"))
-        # Save risk scorer if attached
-        if self.risk_scorer is not None:
-            with open(path / "risk_scorer.pkl", "wb") as f:
-                pickle.dump(self.risk_scorer, f)
+        # Save risk scorers
+        for sname, scorer in self.risk_scorers.items():
+            p = path / f"risk_{sname}.pkl"
+            with open(p, "wb") as f:
+                pickle.dump(scorer, f)
         meta = {
             "time_col": self.time_col,
             "time_unit": self.time_unit,
@@ -939,11 +942,11 @@ class DeploymentRuntime:
             if csv_path.exists():
                 runtime.data_table = pd.read_csv(csv_path)
 
-        # Restore risk scorer if available
-        risk_path = path / "risk_scorer.pkl"
-        if risk_path.exists():
-            with open(risk_path, "rb") as f:
-                runtime.risk_scorer = pickle.load(f)
+        # Restore risk scorers
+        for pkl in sorted(path.glob("risk_*.pkl")):
+            sname = pkl.stem.replace("risk_", "", 1)
+            with open(pkl, "rb") as f:
+                runtime.risk_scorers[sname] = pickle.load(f)
 
         return runtime
 
@@ -955,14 +958,17 @@ class DeploymentRuntime:
 
     # ── Refit on full data ────────────────────────────────────────
 
-    def refit(self, verbose: bool = True) -> None:
-        """用 ``data_table`` 中的全部数据重新训练所有模型。
+    def refit(self, model_names: Optional[list[str]] = None,
+              verbose: bool = True) -> None:
+        """用 ``data_table`` 中的全部数据重新训练模型。
 
         训练完成后，模型内部状态（``_last_ds``、季节性成分等）
         更新至最新时间点。
 
         Parameters
         ----------
+        model_names : list of str or None, optional
+            要重训的模型名列表。默认 ``None`` 重训所有模型。
         verbose : bool, default True
             是否打印每个模型的重训状态。
         """
@@ -972,7 +978,13 @@ class DeploymentRuntime:
         if dt.empty:
             raise RuntimeError("data_table 为空，无法重训。")
 
-        for name, inferer in self.vault.models.items():
+        names = model_names or list(self.vault.models.keys())
+        for name in names:
+            if name not in self.vault.models:
+                if verbose:
+                    print(f"  {name} 不在 vault 中，跳过")
+                continue
+            inferer = self.vault.models[name]
             if verbose:
                 print(f"  refit {name} ...", end=" ", flush=True)
             try:
@@ -1021,14 +1033,14 @@ class DeploymentRuntime:
                     print(f"FAILED: {e}")
 
         # 重新拟合风险基线
-        if self.risk_scorer is not None:
+        for sname in self.risk_scorers:
             try:
-                self.risk_scorer.fit(dt)
+                self.risk_scorers[sname].fit(dt)
                 if verbose:
-                    print("  risk_scorer refit OK")
+                    print(f"  risk_{sname} refit OK")
             except Exception as e:
                 if verbose:
-                    print(f"  risk_scorer refit FAILED: {e}")
+                    print(f"  risk_{sname} refit FAILED: {e}")
 
         if verbose:
             print(f"\n全部重训完成，共 {len(self.vault.models)} 个模型。")

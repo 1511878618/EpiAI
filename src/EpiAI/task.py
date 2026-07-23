@@ -17,12 +17,15 @@ Usage::
     # Train multiple models and compare
     vault = task.compare(["sf_auto_ets", "sf_holt_winters", "xgb"])
 
-    # Deploy the best one with risk scoring
-    runtime = task.deploy(vault.best("PearsonR"), risk="quantile")
+    # Deploy with risk scoring
+    runtime = task.deploy(vault.best("PearsonR"), vault,
+                          risk=["quantile", "zscore"])
 
     # Production use
-    report = runtime.forecast(horizon=6)
+    report = runtime.predict(horizon=6, level=95)
+    # → columns: model_pred | model_lo | model_hi | model_quantile_risk | model_zscore_risk
     runtime.feed(new_df)
+    runtime.refit(model_names=["sf_auto_ets"])  # 指定重训某个模型
 """
 from __future__ import annotations
 
@@ -246,28 +249,29 @@ class ForecastTask:
 
     def deploy(
         self,
-        model_name: str,
+        model_names: str | list[str],
         vault: ModelVault,
-        risk: Optional[str | object] = None,
+        risk: Optional[str | list[str] | object | list[object]] = None,
     ) -> DeploymentRuntime:
-        """Deploy a trained model into a production runtime.
+        """Deploy trained model(s) into a production runtime.
 
         Parameters
         ----------
-        model_name : str
-            Name of the model in the vault (e.g. ``"sf_auto_ets"``).
+        model_names : str or list of str
+            Name(s) of the model(s) in the vault to deploy.
         vault : ModelVault
             Vault returned by ``compare()``.
-        risk : str or RiskScorer or None, optional
-            Risk scoring method: ``"quantile"``, ``"threshold"``,
-            ``"zscore"``.  Pass a ``RiskScorer`` instance for full
-            control.  ``None`` disables risk scoring.
+        risk : str, list of str, RiskScorer, list of RiskScorer, optional
+            Risk scoring method(s).  Each method gets its own scorer::
+
+                risk="quantile"              → runtime.risk_scorers["quantile"]
+                risk=["quantile", "zscore"]  → runtime.risk_scorers["quantile"],
+                                                runtime.risk_scorers["zscore"]
 
         Returns
         -------
         DeploymentRuntime
         """
-        # Build the runtime with data_table from the bundle
         bundle = vault.bundle
         runtime = DeploymentRuntime(
             vault=vault,
@@ -276,7 +280,7 @@ class ForecastTask:
             data_table=self._get_data_for_runtime(),
         )
 
-        # Attach risk scorer
+        # Attach risk scorer(s)
         if risk is not None:
             self._attach_risk(runtime, risk)
 
@@ -289,24 +293,34 @@ class ForecastTask:
         return pd.read_csv(self.data)
 
     def _attach_risk(self, runtime: DeploymentRuntime,
-                     risk: str | object) -> None:
-        """Attach a RiskScorer to the runtime."""
+                     risk: str | list[str] | object | list[object]) -> None:
+        """Attach one or more RiskScorers to the runtime."""
         from EpiAI.risk import RiskScorer
 
-        if isinstance(risk, str):
-            scorer = RiskScorer(
-                method=risk,
-                time_col=self.time_col,
-                value_col=self.target[0],
-            )
-        elif isinstance(risk, RiskScorer):
-            scorer = risk
-        else:
-            raise TypeError(f"Unsupported risk type: {type(risk)}")
+        # Normalize to list of (name, method_or_scorer)
+        risk_list: list[tuple[str, str | RiskScorer]] = []
+        items = risk if isinstance(risk, list) else [risk]
+        for item in items:
+            if isinstance(item, str):
+                risk_list.append((item, item))
+            elif isinstance(item, RiskScorer):
+                # Derive name from the scorer's method attribute
+                name = getattr(item, "method", "risk")
+                risk_list.append((name, item))
+            else:
+                raise TypeError(f"Unsupported risk type: {type(item)}")
 
-        # Fit on the data_table and attach
-        scorer.fit(runtime.data_table)
-        runtime.risk_scorer = scorer
+        for name, spec in risk_list:
+            if isinstance(spec, str):
+                scorer = RiskScorer(
+                    method=spec,
+                    time_col=self.time_col,
+                    value_col=self.target[0],
+                )
+            else:
+                scorer = spec
+            scorer.fit(runtime.data_table)
+            runtime.risk_scorers[name] = scorer
 
     def __repr__(self) -> str:
         return (
