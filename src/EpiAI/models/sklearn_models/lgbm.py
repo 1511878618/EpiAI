@@ -74,7 +74,7 @@ class LGBMSingleForecaster(SklearnMixin):
                 colsample_bytree=0.8,
                 random_state=42,
                 verbosity=-1,
-                device='gpu',
+                device='cpu',
             )
 
         self.model = MultiOutputRegressor(LGBMRegressor(**lgbm_params), n_jobs=-1)
