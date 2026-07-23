@@ -25,6 +25,7 @@ class ETSForecaster(TSMixin):
     def __init__(
         self,
         seasonal_periods: int = 12,
+        season_length: int | None = None,
         error: str = 'add',
         trend: str | None = 'add',
         seasonal: str | None = 'add',
@@ -32,6 +33,8 @@ class ETSForecaster(TSMixin):
         clip_negative: bool = True,
         **kwagrs
     ):
+        if season_length is not None:
+            seasonal_periods = season_length
         self.seasonal = seasonal
         self.seasonal_periods = seasonal_periods
         self.error = error

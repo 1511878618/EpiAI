@@ -56,12 +56,15 @@ class BSTSForecaster(TSMixin):
     def __init__(
         self,
         seasonal_periods: int = 12,
+        season_length: int | None = None,
         niter: int = 250,
         burn: int = 50,
         clip_negative: bool = True,
         chains: int = 1,
         **kwargs,
     ) -> None:
+        if season_length is not None:
+            seasonal_periods = season_length
         self.seasonal_periods = seasonal_periods
         self.niter = niter
         self.burn = burn

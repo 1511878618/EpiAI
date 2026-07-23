@@ -53,10 +53,13 @@ class STLMARIMAForecaster(TSMixin):
     def __init__(
         self,
         seasonal_periods: int = 12,
+        season_length: int | None = None,
         seasonal: str = "periodic",
         clip_negative: bool = True,
         **auto_arima_kwargs,
     ) -> None:
+        if season_length is not None:
+            seasonal_periods = season_length
         if pm is None:
             raise ImportError("STLM-ARIMA requires pmdarima. pip install pmdarima")
         if STL is None:

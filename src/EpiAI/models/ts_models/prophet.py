@@ -65,6 +65,7 @@ class ProphetForecaster(TSMixin):
         yearly_seasonality: bool | int = True,
         weekly_seasonality: bool | int = False,
         daily_seasonality: bool | int = False,
+        season_length: int | None = None,
         changepoint_prior_scale: float = 0.05,
         seasonality_prior_scale: float = 10.0,
         clip_negative: bool = True,

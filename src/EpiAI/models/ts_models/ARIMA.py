@@ -66,12 +66,15 @@ class AutoARIMAXRollingForecaster(TSMixin):
         self,
         seasonal: bool = True,
         m: int = 12,
+        season_length: int | None = None,
         rolling_window_size: int | str | None = 'all',
         horizon: int = 1,
         clip_negative: bool = True,
         auto_arima_kwargs: dict | None = None,
         verbose: bool = False,
     ) -> None:
+        if season_length is not None:
+            m = season_length
         self.seasonal = seasonal
         self.m = m
         self.rolling_window_size = rolling_window_size
