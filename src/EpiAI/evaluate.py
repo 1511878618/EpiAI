@@ -141,8 +141,16 @@ def compare_risk_methods(
         recall = hit_rate
         f1 = _safe(2 * precision * recall, precision + recall)
 
+        # AUC: risk_level (0-3) 作为预测分数 vs is_event 作为真实标签
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = roc_auc_score(event, grp["risk_level"])
+        except Exception:
+            auc = np.nan
+
         metrics.append({
             "model": model, "risk_method": rm,
+            "auc": auc,
             "hit_rate": hit_rate, "fa_rate": fa_rate,
             "precision": precision, "recall": recall, "f1": f1,
             "n_alerts": int(warned.sum()),
