@@ -30,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -201,69 +202,162 @@ class ForecastTask:
 
     # ── Step 1: Compare models ───────────────────────────────────
 
-    def compare(self, models: list[str]) -> ModelVault:
+    def compare(self, models: list[str],
+                cache_dir: Optional[str | Path] = None) -> ModelVault:
         """Train multiple models and return a ModelVault with comparison metrics.
+
+        训练结果会自动缓存到 ``cache_dir / f\"{model_name}.pkl\"``。
+        当数据或配置发生变化时，缓存自动失效并重新训练。
+        若 ``cache_dir=None``，不缓存（每次从头训练）。
 
         Parameters
         ----------
         models : list of str
             Registered model names (e.g. ``["sf_auto_ets", "xgb"]``).
+        cache_dir : str or Path or None, optional
+            缓存目录。指定后每个模型的结果会缓存到 ``{cache_dir}/{name}.pkl``，
+            下次相同数据+配置时直接加载。
 
         Returns
         -------
         ModelVault
             Contains trained ``InferencePipeline`` instances, a metrics
-            comparison DataFrame, and ``.test_predictions`` dict
-            mapping model name → DataFrame with columns ``time``,
-            ``y_true``, ``y_pred``.
+            comparison DataFrame, and ``.test_predictions`` dict.
         """
+        import hashlib
+        import pickle
+
         bundle = self.build_bundle()
-        results = {}
-        test_data: dict[str, pd.DataFrame] = {}  # model → test predictions frame
+        results: dict[str, TrainResult] = {}
+        test_data: dict[str, pd.DataFrame] = {}
         time_col = self.time_col
         test_times = pd.to_datetime(bundle.test_df[self.time_col]) if bundle.test_df is not None else None
+
+        # 计算数据+配置指纹（所有模型共享）
+        data_fingerprint = self._compute_data_fingerprint(bundle)
 
         for name in models:
             cls = get(name)
             season = self.freq_to_season_length()
 
-            # Determine constructor params based on model type
+            # 确定模型参数
             paradigm = cls.paradigm()
             if paradigm in ("torch", "sklearn"):
-                n_features = bundle.n_features
-                model = cls(
-                    input_dim=n_features,
+                model_params = dict(
+                    input_dim=bundle.n_features,
                     lookback=self.lookback,
                     horizon=self.horizon,
                     target_dim=len(self.target),
                 )
+                model = cls(**model_params)
             else:
-                # TS model — use season_length
-                model = cls(season_length=season)
+                model_params = dict(season_length=season)
+                model = cls(**model_params)
 
+            # 模型指纹 = 数据指纹 + 模型名 + 模型参数
+            model_fingerprint = self._model_fingerprint(
+                data_fingerprint, name, model_params
+            )
+
+            # ── 缓存检查 ──────────────────────────────────────
+            cached = None
+            if cache_dir is not None:
+                cache_path = Path(cache_dir) / f"{name}.pkl"
+                if cache_path.exists():
+                    try:
+                        with open(cache_path, "rb") as f:
+                            cached = pickle.load(f)
+                        if cached.get("fingerprint") != model_fingerprint:
+                            cached = None
+                    except Exception:
+                        cached = None
+
+            if cached is not None:
+                result = cached["result"]
+                results[name] = result
+                td = cached.get("test_data")
+                if td is not None:
+                    test_data[name] = td
+                m = result.metrics.iloc[0]
+                print(f"  {name:30s}  ← 缓存  MAE={m['MAE']:.0f}  "
+                      f"R²={m['R2']:.3f}  PearsonR={m['PearsonR']:.3f}")
+                continue
+
+            # ── 训练 ──────────────────────────────────────────
             result = EpiAITrainer(model, verbose=False).fit(bundle)
             results[name] = result
             m = result.metrics.iloc[0]
             print(f"  {name:30s}  MAE={m['MAE']:.0f}  R²={m['R2']:.3f}  "
                   f"PearsonR={m['PearsonR']:.3f}")
 
-            # Build test predictions DataFrame
+            # 测试集预测 DataFrame
             n_pred = result.predictions.shape[0]
-            y_pred = result.predictions[:, 0, 0]  # step 0
+            y_pred = result.predictions[:, 0, 0]
             y_true = bundle.get_y_series("test")[:n_pred].ravel()
-            if test_times is not None:
-                times = test_times[:n_pred]
-            else:
-                times = range(n_pred)
-            test_data[name] = pd.DataFrame({
+            times = test_times[:n_pred] if test_times is not None else range(n_pred)
+            td = pd.DataFrame({
                 time_col: times,
                 "y_true": y_true,
                 "y_pred": y_pred,
             })
+            test_data[name] = td
+
+            # ── 写入缓存 ──────────────────────────────────────
+            if cache_dir is not None:
+                cache_path = Path(cache_dir) / f"{name}.pkl"
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(cache_path, "wb") as f:
+                    pickle.dump({
+                        "fingerprint": model_fingerprint,
+                        "result": result,
+                        "test_data": td,
+                    }, f)
+                print(f"         → 已缓存至 {cache_path}")
 
         vault = ModelVault.from_results(results, bundle)
-        vault.test_predictions = test_data  # attach for user inspection
+        vault.test_predictions = test_data
         return vault
+
+    def _compute_data_fingerprint(self, bundle) -> str:
+        """生成数据+配置的指纹（所有模型共享的部分）。"""
+        import hashlib
+
+        h = hashlib.md5()
+
+        # 数据的行列指纹（不 hash 全部值，用 shape + 行 hash）
+        for split_name in ("train", "val", "test"):
+            df = getattr(bundle, f"{split_name}_df")
+            if df is not None:
+                h.update(split_name.encode())
+                h.update(str(df.shape).encode())
+                h.update(str(df.columns.tolist()).encode())
+                # 首尾各 3 行 + 随机 3 行
+                sample = pd.concat([
+                    df.head(3), df.tail(3),
+                    df.sample(min(3, len(df)), random_state=42)
+                ]).reset_index(drop=True)
+                h.update(pd.util.hash_pandas_object(sample).sum())
+
+        # 配置
+        h.update(str(bundle.freq).encode())
+        h.update(str(self.lookback).encode())
+        h.update(str(self.horizon).encode())
+        h.update(str(self.features).encode())
+        h.update(str(self.target).encode())
+        h.update(str(bundle.transforms).encode())
+        h.update(str(self.split.train_end).encode())
+        h.update(str(self.split.val_end).encode())
+
+        return h.hexdigest()
+
+    def _model_fingerprint(self, data_fp: str, model_name: str,
+                           model_params: dict) -> str:
+        """数据指纹 + 模型标识 = 模型级指纹。"""
+        import hashlib
+        h = hashlib.md5(data_fp.encode())
+        h.update(model_name.encode())
+        h.update(str(sorted(model_params.items())).encode())
+        return h.hexdigest()
 
     # ── Step 2: Deploy ───────────────────────────────────────────
 
