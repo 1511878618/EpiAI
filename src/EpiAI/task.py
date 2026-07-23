@@ -212,11 +212,17 @@ class ForecastTask:
         Returns
         -------
         ModelVault
-            Contains trained ``InferencePipeline`` instances and a metrics
-            comparison DataFrame.
+            Contains trained ``InferencePipeline`` instances, a metrics
+            comparison DataFrame, and ``.test_predictions`` dict
+            mapping model name → DataFrame with columns ``time``,
+            ``y_true``, ``y_pred``.
         """
         bundle = self.build_bundle()
         results = {}
+        test_data: dict[str, pd.DataFrame] = {}  # model → test predictions frame
+        time_col = self.time_col
+        test_times = pd.to_datetime(bundle.test_df[self.time_col]) if bundle.test_df is not None else None
+
         for name in models:
             cls = get(name)
             season = self.freq_to_season_length()
@@ -241,7 +247,22 @@ class ForecastTask:
             print(f"  {name:30s}  MAE={m['MAE']:.0f}  R²={m['R2']:.3f}  "
                   f"PearsonR={m['PearsonR']:.3f}")
 
+            # Build test predictions DataFrame
+            n_pred = result.predictions.shape[0]
+            y_pred = result.predictions[:, 0, 0]  # step 0
+            y_true = bundle.get_y_series("test")[:n_pred].ravel()
+            if test_times is not None:
+                times = test_times[:n_pred]
+            else:
+                times = range(n_pred)
+            test_data[name] = pd.DataFrame({
+                time_col: times,
+                "y_true": y_true,
+                "y_pred": y_pred,
+            })
+
         vault = ModelVault.from_results(results, bundle)
+        vault.test_predictions = test_data  # attach for user inspection
         return vault
 
     # ── Step 2: Deploy ───────────────────────────────────────────
