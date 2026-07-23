@@ -1,22 +1,26 @@
 """
 EpiAI model zoo.
 
-Model families
---------------
-* ``torch_models`` — PyTorch deep-learning forecasters (CNN, LSTM, …)
-* ``sklearn_models`` — sklearn-compatible forecasters (XGB, LGBM, …)
-* ``ts_models`` — Time-series statistical models (ARIMA, ETS, …)
+All model families are auto-imported so ``list_models()`` reflects the
+full registry without additional imports::
 
-Quick lookup (requires specific import)::
-
-    from EpiAI.models.registry import get, list_models
-
-    Cls = get("LSTM")
-    model = Cls(input_dim=8, lookback=12, horizon=3, target_dim=1)
+    from EpiAI.models import get, list_models
+    list_models()                          # → all 39+ models
+    model = get("sf_auto_arima")(...)      # statsforecast backend
+    model = get("xgb")(...)                # sklearn backend
 """
-
 from __future__ import annotations
 
 from .registry import get, list_models, register
 
+# Auto-import all model families to populate the registry
+from . import ts_models       # noqa: F401 — built-in TS + 33 statsforecast
+from . import sklearn_models  # noqa: F401 — XGB, LGBM, RF, SVR, LinearReg
+
+try:
+    from . import torch_models  # noqa: F401 — LSTM, TCN, Transformer, …
+except ImportError:
+    pass  # PyTorch optional
+
 __all__ = ["register", "get", "list_models"]
+
