@@ -1,10 +1,14 @@
 """
-预警评估模块 — 纯二分类预警评估。
+预警评估模块 — 多方法二分类预警评估。
 
-核心：用 ``compare()`` 产出的测试集预测值直接做二分类预警。
-- 预测值超过分位数 → 预警
-- 实际值超过分位数 → 事件
-- 不需要 RiskScorer，直接用 y_pred vs y_true 的错位矩阵
+支持多种方法定义阈值，然后做纯二分类：
+  - 预测值超过阈值 → 预警
+  - 实际值超过阈值 → 事件
+
+方法:
+  - "zscore":    阈值 = mean + level × std
+  - "quantile":  阈值 = level 分位数（如 0.90）
+  - "threshold": 阈值 = level（绝对值）
 
 使用方法::
 
@@ -13,12 +17,16 @@
     task = ForecastTask(data=df, target="cases", freq="MS", horizon=12)
     vault = task.compare(["sf_auto_ets", "sf_holt_winters"])
 
-    report = warning_report(
-        vault=vault, bundle=task.build_bundle(), task=task,
-        alert_percentile=0.90,   # 预测 > 历史 90% 分位 → 预警
-        event_percentile=0.90,   # 实际 > 历史 90% 分位 → 事件
-    )
+    # 用 zscore 定义预警和事件
+    report = warning_report(vault, bundle, task,
+                            alert_method="zscore",    alert_level=1.0,
+                            event_method="zscore",    event_level=1.0)
     print(report)
+
+    # 对比多种方法
+    for method in ["quantile", "zscore", "threshold"]:
+        r = warning_report(vault, bundle, task, method=method, level=0.90)
+        print(r[["model", "auc", "hit_rate", "fa_rate", "f1"]])
 """
 from __future__ import annotations
 
@@ -30,15 +38,22 @@ def warning_report(
     vault,
     bundle,
     task,
-    alert_percentile: float = 0.90,
-    event_percentile: float = 0.90,
+    method: str = "quantile",
+    level: float = 0.90,
+    alert_method: str | None = None,
+    event_method: str | None = None,
+    alert_level: float | None = None,
+    event_level: float | None = None,
 ) -> pd.DataFrame:
     """利用 compare() 测试集预测值做二分类预警评估。
 
-    对 vault 中每个模型、每个测试时间点：
-    - 若 ``y_pred > alert_threshold`` → 预警
-    - 若 ``y_true > event_threshold``  → 事件
-    计算混淆矩阵 + 指标。
+    支持多种阈值计算方法，每种方法只需一个 level 参数：
+    - ``"quantile"``:  level=0.90 → 90% 分位数
+    - ``"zscore"``:    level=2.0  → 均值 + 2×标准差
+    - ``"threshold"``: level=500  → 绝对值 500
+
+    预警和事件的阈值可分别指定（通过 alert_method / event_method），
+    也可统一指定（通过 method / level）。
 
     Parameters
     ----------
@@ -48,10 +63,14 @@ def warning_report(
         ``task.build_bundle()`` 返回值。
     task : ForecastTask
         当前预测任务。
-    alert_percentile : float, default 0.90
-        预警阈值分位数。预测值超过此分位 → 预警。
-    event_percentile : float, default 0.90
-        事件阈值分位数。实际值超过此分位 → 事件。
+    method : str, default "quantile"
+        统一指定预警和事件的阈值计算方法。
+    level : float, default 0.90
+        统一指定预警和事件的阈值参数。
+    alert_method, event_method : str or None
+        分别指定预警和事件的阈值计算方法。若为 None 则使用 ``method``。
+    alert_level, event_level : float or None
+        分别指定预警和事件的阈值参数。若为 None 则使用 ``level``。
 
     Returns
     -------
@@ -59,13 +78,17 @@ def warning_report(
         ``model, auc, hit_rate, fa_rate, precision, recall, f1,
         n_alerts, n_events, tp, fp, fn, tn``
     """
-    # 训练数据（train + val）
+    # 训练数据
     train_data = _get_train_data(bundle, task)
     target = task.target[0]
 
-    # 拟合期分位数阈值（基于训练数据）
-    alert_threshold = float(train_data[target].quantile(alert_percentile))
-    event_threshold = float(train_data[target].quantile(event_percentile))
+    am = alert_method or method
+    em = event_method or method
+    al = alert_level if alert_level is not None else level
+    el = event_level if event_level is not None else level
+
+    alert_threshold = _compute_threshold(train_data, target, am, al)
+    event_threshold = _compute_threshold(train_data, target, em, el)
 
     records: list[dict] = []
     test_predictions = getattr(vault, "test_predictions", {})
@@ -76,7 +99,6 @@ def warning_report(
     for model_name, td in test_predictions.items():
         y_pred = td["y_pred"].values
         y_true = td["y_true"].values
-        time_col = task.time_col
 
         for h in range(len(y_pred)):
             is_warning = bool(y_pred[h] > alert_threshold)
@@ -130,16 +152,41 @@ def warning_report(
             "f1": f1,
             "n_alerts": int(warned.sum()),
             "n_events": int(event.sum()),
-            "tp": tp,
-            "fp": fp,
-            "fn": fn,
-            "tn": tn,
+            "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         })
 
     return pd.DataFrame(metrics).sort_values("auc", ascending=False)
 
 
-# ── 辅助 ──────────────────────────────────────────────────
+# ── 阈值计算 ──────────────────────────────────────────────
+
+
+def _compute_threshold(data: pd.DataFrame, target: str,
+                       method: str, level: float) -> float:
+    """根据方法计算阈值。
+
+    Parameters
+    ----------
+    method : str
+        ``"quantile"``, ``"zscore"``, 或 ``"threshold"``。
+    level : float
+        方法参数：
+        - quantile: 分位数（0.90 = 90% 分位）
+        - zscore:   标准差倍数（1.0 = 均值 + 1×std）
+        - threshold: 绝对值
+    """
+    vals = data[target].values.astype(float)
+
+    if method == "quantile":
+        return float(np.nanquantile(vals, level))
+    elif method == "zscore":
+        mean = np.nanmean(vals)
+        std = np.nanstd(vals) or 1.0
+        return float(mean + level * std)
+    elif method == "threshold":
+        return float(level)
+    else:
+        raise ValueError(f"不支持的方法: {method}")
 
 
 def _get_train_data(bundle, task):
