@@ -65,6 +65,7 @@ class Adapter(TSMixin):
         # Runtime state
         self._fitted = None
         self._last_ds = None
+        self._last_ci = None
 
     # ── Default decoder ─────────────────────────────────────────
 
@@ -109,15 +110,41 @@ class Adapter(TSMixin):
         if self._fitted is None:
             raise RuntimeError("not fitted")
         n = len(self._to_1d(y_test))
-        raw = self._fitted.predict(h=n, X=X_test)
+        level = kwargs.get("level")
+        pred_kw = {}
+        if level is not None:
+            pred_kw["level"] = level if isinstance(level, list) else [level]
+        raw = self._fitted.predict(h=n, X=X_test, **pred_kw)
+        self._extract_ci(raw, level)
         return self._clip(self._decoder(raw))
 
-    def forecast(self, n_periods: int, X_future=None):
+    def forecast(self, n_periods: int, X_future=None, level=None):
         if self._fitted is None:
             raise RuntimeError("not fitted")
-        raw = self._fitted.predict(h=n_periods, X=X_future)
+        pred_kw = {}
+        if level is not None:
+            pred_kw["level"] = level if isinstance(level, list) else [level]
+        raw = self._fitted.predict(h=n_periods, X=X_future, **pred_kw)
+        self._extract_ci(raw, level)
         pred = self._clip(self._decoder(raw))
         return pred.reshape(-1, 1, 1)
+
+    def _extract_ci(self, raw, level):
+        """Extract confidence intervals from predict output and store on self."""
+        if level is None or not isinstance(raw, dict):
+            self._last_ci = None
+            return
+        # StatsForecast returns keys like "lo-95", "hi-95"
+        lo_key = f"lo-{level}" if isinstance(level, (int, float)) else None
+        hi_key = f"hi-{level}" if isinstance(level, (int, float)) else None
+        if lo_key and hi_key and lo_key in raw and hi_key in raw:
+            self._last_ci = {
+                "level": level,
+                "lower": np.asarray(raw[lo_key], dtype=float),
+                "upper": np.asarray(raw[hi_key], dtype=float),
+            }
+        else:
+            self._last_ci = None
 
     def __repr__(self) -> str:
         return (

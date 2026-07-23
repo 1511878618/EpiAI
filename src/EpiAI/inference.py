@@ -192,7 +192,8 @@ class InferencePipeline:
         # 4. Inverse transform predictions back to original scale
         return self._inverse_target(raw_pred)
 
-    def forecast(self, steps: int, X_future: Optional[pd.DataFrame] = None) -> np.ndarray:
+    def forecast(self, steps: int, X_future: Optional[pd.DataFrame] = None,
+                 level: Optional[int] = None) -> np.ndarray:
         """Pure forecast into unknown future (TS-paradigm models only).
 
         Parameters
@@ -201,6 +202,9 @@ class InferencePipeline:
             Number of time steps to forecast.
         X_future : pd.DataFrame or None, optional
             Future exogenous features (if the model supports them).
+        level : int or None, optional
+            Confidence level for prediction intervals (e.g. 95).
+            When set, ``self.model._last_ci`` is populated after the call.
 
         Returns
         -------
@@ -214,12 +218,22 @@ class InferencePipeline:
             )
         X_arr = X_future.values if X_future is not None else None
         if X_arr is not None:
-            raw = self.model.forecast(steps, X_arr)
+            raw = self.model.forecast(steps, X_arr, level=level)
         else:
-            raw = self.model.forecast(steps)
+            raw = self.model.forecast(steps, level=level)
         raw = np.asarray(raw, dtype=np.float32)
         while raw.ndim < 3:
             raw = np.expand_dims(raw, -1)
+
+        # Inverse-transform CI bounds if present
+        ci = getattr(self.model, "_last_ci", None)
+        if ci is not None:
+            for key in ("lower", "upper"):
+                arr = np.asarray(ci[key], dtype=np.float32).reshape(-1, 1, 1)
+                inv = self._inverse_target(arr)[:, 0, 0]
+                ci[key] = inv
+            self.model._last_ci = ci
+
         return self._inverse_target(raw)
 
     def update(
@@ -730,22 +744,21 @@ class DeploymentRuntime:
 
     # ── Core: predict ─────────────────────────────────────────
 
-    def predict(self, horizon: int = 1) -> pd.DataFrame:
+    def predict(self, horizon: int = 1, level: Optional[int] = None) -> pd.DataFrame:
         """预测未来 horizon 步，返回 时间×模型 表格。
-
-        TS 模型：从 _last_ds 到 data_table 末尾的 gap 通过 forecast
-        额外步数跳过，只返回真正未来 horizon 步的预测值。
-        窗口模型：取 data_table 最后 L 行，一次 predict 出 horizon 步。
 
         Parameters
         ----------
         horizon : int
             预测步数，默认 1。
+        level : int or None, optional
+            置信水平（如 95）。支持此参数的模型会在原预测值旁
+            追加 ``{model}_lo`` 和 ``{model}_hi`` 列。
 
         Returns
         -------
         pd.DataFrame
-            行 = 时间点, 列 = 模型名, 值为预测值。
+            行 = 时间点, 列 = 模型名（以及风险/CI 列）。
         """
         if self.data_table.empty:
             raise RuntimeError("data_table 为空，无法预测。")
@@ -757,6 +770,7 @@ class DeploymentRuntime:
         )
 
         results: Dict[str, np.ndarray] = {}
+        ci_bounds: Dict[str, dict] = {}  # model_name → {"lower": ..., "upper": ...}
         for name, inferer in self.vault.models.items():
             try:
                 if inferer.paradigm == "ts":
@@ -765,9 +779,17 @@ class DeploymentRuntime:
                     # 这些步是已观测数据，通过 forecast 额外步数跳过
                     gap = ((last_time.year - last_ds.year) * 12 +
                            (last_time.month - last_ds.month))
-                    raw = inferer.forecast(gap + horizon)
+                    raw = inferer.forecast(gap + horizon, level=level)
                     pred = np.asarray(raw, dtype=np.float32).ravel()
                     pred = pred[-horizon:]  # 只取真正未来的 horizon 步
+
+                    # 提取 CI
+                    ci = getattr(inferer.model, "_last_ci", None)
+                    if ci is not None:
+                        ci_bounds[name] = {
+                            "lower": np.asarray(ci["lower"], dtype=float)[-horizon:],
+                            "upper": np.asarray(ci["upper"], dtype=float)[-horizon:],
+                        }
                 else:
                     lb = inferer.lookback
                     if len(self.data_table) < lb:
@@ -789,6 +811,11 @@ class DeploymentRuntime:
                 results[name] = np.full(horizon, np.nan)
 
         result_df = pd.DataFrame(results, index=future)
+
+        # CI bounds — 追加 _lo / _hi 列
+        for mname, bounds in ci_bounds.items():
+            result_df[f"{mname}_lo"] = bounds["lower"]
+            result_df[f"{mname}_hi"] = bounds["upper"]
 
         # Risk scoring — attach as additional columns
         if self.risk_scorer is not None:

@@ -69,7 +69,7 @@ class BaseForecaster(ABC):
                          update_state=True, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
-    def forecast(self, n_periods: int, X_future=None) -> np.ndarray:
+    def forecast(self, n_periods: int, X_future=None, **kwargs) -> np.ndarray:
         raise NotImplementedError
 
     # ── Serialisation ─────────────────────────────────────────
