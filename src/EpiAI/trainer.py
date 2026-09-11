@@ -122,6 +122,47 @@ class EpiAITrainer:
         else:
             raise ValueError(f"Unknown paradigm: {paradigm}")
 
+    # ── Full-data path (no hold-out) ────────────────────────────────
+
+    def fit_full(self, bundle) -> TrainResult:
+        """在完整数据集上训练模型，不做留出评估（用于最终上线模型）。
+
+        与 ``fit(bundle)`` 的分工：fit() 在 train 上训练、在 test 上评估，
+        用于模型**选择**；fit_full() 忽略 val/test，让 100% 数据参与训练，
+        用于模型**上线**。二者由 ``ForecastTask.compare()`` 与
+        ``ForecastTask.fit_full()`` 分别调用，形成
+        「切分评估选型 → 全量训练 → 冻结部署」的生产流程。
+
+        Notes
+        -----
+        - 传入的 bundle 须为全量 bundle（``TimeSplit(train_ratio=1.0)``），
+          使 ``train_df`` / ``train_x`` 覆盖全部数据行。
+        - 不产生 test 预测与指标——全量模型没有诚实的样本外指标，
+          模型选择必须来自 fit()/compare() 的留出评估。
+        - TS 模型的 ``_last_ds`` 会被设为最后一条训练时间戳，使
+          ``DeploymentRuntime.predict`` 直接从数据末尾外推（gap=0）。
+        """
+        paradigm = self.model.paradigm()
+        if paradigm == "torch":
+            return self._fit_torch_full(bundle)
+        elif paradigm == "sklearn":
+            return self._fit_sklearn_full(bundle)
+        elif paradigm == "ts":
+            return self._fit_ts_full(bundle)
+        else:
+            raise ValueError(f"Unknown paradigm: {paradigm}")
+
+    def _empty_result(self) -> TrainResult:
+        """fit_full 的结果：模型已训练，无测试预测与指标。"""
+        return TrainResult(
+            model=self.model,
+            predictions=np.empty((0,), dtype=np.float32),
+            metrics=pd.DataFrame(
+                columns=["target", "MAE", "RMSE", "MAPE", "R2", "PearsonR", "n"]
+            ),
+            history=getattr(self, "_history", None),
+        )
+
     # ── Torch path ──────────────────────────────────────────────────
 
     def _fit_torch(self, bundle):
@@ -194,6 +235,48 @@ class EpiAITrainer:
 
         return self._build_result(bundle, preds)
 
+    def _fit_torch_full(self, bundle):
+        """Torch 全量训练：无验证集 → 无 early stopping，按固定 epoch 预算训练。"""
+        try:
+            import torch
+            import torch.nn as nn
+            from torch.utils.data import DataLoader, TensorDataset
+        except ImportError:
+            raise ImportError("PyTorch is required for torch-paradigm models.")
+
+        device = self._resolve_device()
+        self._history = {"train_loss": []}
+
+        model = self.model.to(device)
+        loss_fn = self.loss or nn.MSELoss()
+
+        _opt_keys = {"lr", "weight_decay", "betas", "eps", "amsgrad"}
+        _opt_kw = {k: v for k, v in self.optimizer_config.items() if k in _opt_keys}
+        optimizer = torch.optim.AdamW(
+            model.parameters(), **_opt_kw if _opt_kw else {"lr": 1e-3}
+        )
+
+        batch_size = self.optimizer_config.get("batch_size", 32)
+        train_loader = DataLoader(
+            TensorDataset(
+                torch.tensor(bundle.train_x, dtype=torch.float32),
+                torch.tensor(bundle.train_y, dtype=torch.float32),
+            ),
+            batch_size=batch_size,
+            shuffle=True,
+        )
+
+        max_epochs = self.optimizer_config.get("max_epochs", 50)
+        for epoch in range(1, max_epochs + 1):
+            train_loss = self._train_epoch(
+                model, train_loader, loss_fn, optimizer, device
+            )
+            self._history["train_loss"].append(train_loss)
+            if self.verbose:
+                print(f"Epoch [{epoch}/{max_epochs}] train={train_loss:.6f}")
+
+        return self._empty_result()
+
     # ── Sklearn path ────────────────────────────────────────────────
 
     def _fit_sklearn(self, bundle):
@@ -203,6 +286,11 @@ class EpiAITrainer:
         )
         preds = self.model.predict(bundle.test_x)
         return self._build_result(bundle, preds)
+
+    def _fit_sklearn_full(self, bundle):
+        """Sklearn 全量训练：直接 fit 全部窗口样本，无需 val/test。"""
+        self.model.fit(bundle.train_x, bundle.train_y)
+        return self._empty_result()
 
     # ── TimeSeries path ─────────────────────────────────────────────
 
@@ -293,6 +381,46 @@ class EpiAITrainer:
             preds = preds.reshape(preds.shape[0], -1, 1)
 
         return self._build_result(bundle, preds)
+
+    def _fit_ts_full(self, bundle):
+        """TS 全量训练：整段序列一次性 fit，无测试集对齐问题。"""
+        y_train = bundle.get_y_series("train").squeeze()
+
+        try:
+            time_col = bundle.data.time_col
+            dates = bundle.train_df[time_col].values
+        except (AttributeError, KeyError):
+            dates = None
+
+        # 外生变量准备：剔除与目标重叠的自回归列；无外生支持的模型置空
+        X_train = bundle.get_X_series("train") if bundle.feature_names else None
+        if X_train is not None:
+            _overlap = set(bundle.feature_names) & set(bundle.target_names)
+            if _overlap:
+                _keep = [c for c in bundle.feature_names if c not in _overlap]
+                if _keep:
+                    _idx = [bundle.feature_names.index(c) for c in _keep]
+                    X_train = X_train[:, _idx]
+                else:
+                    X_train = None
+        if X_train is not None and not getattr(self.model, "exogenous_supported", False):
+            X_train = None
+
+        n_targets = len(bundle.target_names)
+        sup = getattr(self.model, "target_dim_supported", 1)
+        if sup != "n" and n_targets != sup:
+            raise ValueError(
+                f"{type(self.model).__name__} supports "
+                f"{'univariate' if sup == 1 else f'{sup}-variable'} targets, "
+                f"got {n_targets} target(s): {bundle.target_names}. "
+                f"TS models are typically univariate; "
+                f"train one model per target."
+            )
+
+        self.model.fit_sequence(y_train, X_train, dates=dates)
+        if dates is not None and len(dates) > 0:
+            self.model._last_ds = pd.to_datetime(dates[-1])
+        return self._empty_result()
 
     # ── Internal helpers ────────────────────────────────────────────
 

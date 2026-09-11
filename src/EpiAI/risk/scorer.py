@@ -209,7 +209,7 @@ class RiskScorer:
         ----------
         predictions : pd.DataFrame
             ``runtime.predict(horizon=N)`` 返回的 DataFrame。
-            行 = 时间（字符串 "YYYY-MM"），列 = 模型名。
+            时间可以在 index（DatetimeIndex）或 ``time_col`` 列中。
         history : pd.DataFrame, optional
             历史数据。如果未传入，使用 ``fit()`` 时缓存的数据。
 
@@ -219,14 +219,45 @@ class RiskScorer:
             行 = 时间，每模型一列风险等级值的 DataFrame。
         """
         result = predictions.copy()
-        times = pd.to_datetime(result.index)
+
+        # ── 确定时间轴：优先 index，其次时间列 ──────────────
+        times = None
+        if isinstance(result.index, pd.DatetimeIndex):
+            times = result.index
+        else:
+            time_col = getattr(self, "time_col", "time")
+            if time_col in result.columns:
+                times = pd.to_datetime(result[time_col].values)
+                result = result.drop(columns=[time_col])
+            else:
+                for c in result.columns:
+                    if pd.api.types.is_datetime64_any_dtype(result[c]):
+                        times = pd.to_datetime(result[c].values)
+                        result = result.drop(columns=[c])
+                        break
+        if times is None:
+            raise ValueError(
+                "predictions 缺少时间信息：index 不是 DatetimeIndex，"
+                f"也没有 {self.time_col!r} 或其它 datetime 列。"
+            )
+
+        # ── 只保留模型预测列参与评分 ──────────────────────────
+        # 剔除时间列（已处理）与 CI 区间列（_lo/_hi），只对数值预测列评分
+        num_cols = [
+            c for c in result.columns
+            if pd.api.types.is_numeric_dtype(result[c])
+            and not c.endswith("_lo") and not c.endswith("_hi")
+        ]
+        if not num_cols:
+            raise ValueError("predictions 中没有可评分的数值列。")
+        result = result[num_cols]
 
         if self.method in ("pct_change",):
             # 环比方法需要上一步的预测值
-            prev_vals = {col: np.nan for col in predictions.columns}
-            for i, (idx, row) in enumerate(predictions.iterrows()):
+            prev_vals = {col: np.nan for col in result.columns}
+            for i, (idx, row) in enumerate(result.iterrows()):
                 t = times[i]
-                for col in predictions.columns:
+                for col in result.columns:
                     val = row[col]
                     prev = prev_vals[col]
                     # 用当前值 vs 历史最后值 计算变化率

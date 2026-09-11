@@ -102,6 +102,7 @@ def plot_forecast(
     top_n: int = 5,
     figsize=(12, 5),
     dpi=300,
+    model_cols = None,
     title: str = "未来预测",
 ):
     """绘制历史曲线 + 多模型未来预测。
@@ -130,16 +131,18 @@ def plot_forecast(
     pred_times = pd.to_datetime(pred_df[time_col])
 
     # 选取模型列（排除 time 和 _risk / _lo / _hi 辅助列）
-    model_cols = [
-        c
-        for c in pred_df.columns
-        if c != time_col
-        and not c.endswith("_risk")
-        and not c.endswith("_lo")
-        and not c.endswith("_hi")
-        and not c.endswith("_quantile")
-        and not c.endswith("_zscore")
-    ][:top_n]
+    if model_cols is None:
+        model_cols = [
+            c
+            for c in pred_df.columns
+            if c != time_col
+            and not c.endswith("_risk")
+            and not c.endswith("_lo")
+            and not c.endswith("_hi")
+            and not c.endswith("_quantile")
+            and not c.endswith("_zscore")
+        ][:top_n]
+    
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
