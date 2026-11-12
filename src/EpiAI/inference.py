@@ -753,9 +753,10 @@ class ModelVault:
             try:
                 if inferer.paradigm == "ts":
                     last_ds = pd.Timestamp(inferer.model._last_ds)
-                    # gap = data_table 末尾到 _last_ds 的步数（fit_full 后为 0）
-                    gap = ((last_time.year - last_ds.year) * 12 +
-                           (last_time.month - last_ds.month))
+                    # gap = data_table 末尾到 _last_ds 的步数（fit_full 后为 0），
+                    # 按 vault 自身 freq 计步，月/周/日通用
+                    gap = len(pd.date_range(last_ds, last_time,
+                                            freq=self._time_delta)) - 1
                     raw = inferer.forecast(gap + horizon, level=level)
                     pred = np.asarray(raw, dtype=np.float32).ravel()
                     pred = pred[-horizon:]

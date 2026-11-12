@@ -88,6 +88,9 @@ def freq_to_season_length(freq: str | None) -> int:
         return 1
     # Strip multiplier prefix (e.g. "2MS" → "MS")
     base = "".join(c for c in freq if not c.isdigit())
+    if base.upper().startswith("W"):
+        # 周频：任意锚点（W / W-MON / W-SUN），季节长度都是 52
+        return 52
     return _SEASON_LENGTH_MAP.get(base, 12)
 
 
